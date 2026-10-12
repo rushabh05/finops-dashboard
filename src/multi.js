@@ -3,7 +3,7 @@ import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { loadConfig } from './config.js';
-import { createWorkspace } from './server.js';
+import { createWorkspace } from './app.js';
 import { HttpError, OriginPolicy, Auth, authGate, listenGuard } from './security.js';
 
 /*

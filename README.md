@@ -34,7 +34,7 @@ Requires **Node >= 22.13** (`node:sqlite` without a flag). No `npm install` is n
 ```
 git clone https://github.com/rushabh05/finops-dashboard.git && cd finops-dashboard
 npm start                    # http://127.0.0.1:8787  (first run seeds 30 days of simulated history in ~3 s)
-npm test                     # 143 tests, ~11 s
+npm test                     # 148 tests, ~12 s
 ```
 
 Open the page and wait a few seconds: the simulator writes live traffic and plants three anomalies (a tenant cost spike, prompt bloat,
@@ -438,7 +438,7 @@ Channel limits (`bufferLimit`, `drainMark`, `maxPending`, `maxRowsPerFrame`, `hi
 
 ## Tests
 
-`npm test` runs 143 `node:test` tests (about 11 s, run serially):
+`npm test` runs 148 `node:test` tests (about 12 s, run serially):
 
 * **pricing**: cached tokens and cache writes (5-minute / 1-hour), rounding, `effective_from`, a `BigInt` reference on 5,000 random inputs each with and without writes;
 * **ingest**: validation (every field), batch cap, idempotency, atomic rollback, **rollups vs brute-force recomputation** after randomised
@@ -466,6 +466,10 @@ Channel limits (`bufferLimit`, `drainMark`, `maxPending`, `maxRowsPerFrame`, `hi
   isolation between sources (data, tags, simulator refused on imports), static assets and SSE/WebSocket under `/d/<id>/`, unknown or traversal-style paths, Origin/Host under the prefix, writes landing in the
   right database, the sample simulator pausing when nobody watches and honouring a manual pause, `DEFAULT_SOURCE`, authentication at the front door (the cookie flow keeps the prefix), the non-loopback guard, and
   closing every workspace; plus a **static check that every URL the page uses is relative** (what makes `/d/<id>/` work) and a WebSocket test that the server answers a client close with exactly one close frame;
+* **the real entry point** (`cli.test.js`): launches `node src/server.js` as a child process the way `npm start` does, in multi-database mode, with `DB_PATH` (single database) and with `AUTH_TOKEN`; checks it announces itself,
+  answers over HTTP, stops cleanly on SIGTERM, refuses a non-loopback address without a token / a too-short token / a busy port with exit status 1 and a clear message, and that importing the module starts nothing.
+  This exists because the first published version's `npm start` deadlocked on a circular import (the entry module awaited a module that imported it back) and exited silently, which no test noticed since all the others import the
+  functions directly;
 * **migration and routing**: an old-schema database gains the cache-write columns; request ids containing `:` / `#` can be fetched percent-encoded.
 
 ## What is verified and what is not

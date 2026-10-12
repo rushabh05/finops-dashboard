@@ -1,6 +1,14 @@
 # Changelog
 
-## 1.0.0 - 2026-10-12
+## 1.0.1 - 2026-10-12
+
+* **Fixed `npm start`.** The entry point (`src/server.js`) awaited the multi-database module, which imported the entry point back: a circular import with a pending top-level
+  await, so the process exited silently ("unsettled top-level await"). The application code now lives in `src/app.js` and `src/multi.js`; `src/server.js` only starts one of them.
+  Added `tests/cli.test.js`, which runs the real entry point (the other tests import the functions directly, which is why none of them noticed).
+* Fixed a flaky channel test that paced its source with a timer (found by the first CI run).
+
+
+## 1.0.0 - 2026-10-12 (first public commit)
 
 First public release.
 
