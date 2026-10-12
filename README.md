@@ -476,7 +476,9 @@ garbage-collected mid-iteration on Node 22.13 ("statement has been finalized"), 
 holds on macOS but not with Linux's larger socket buffers, so it now waits until production has stopped.
 The data source switcher was driven in headless Chrome (`scripts/ui-smoke-switcher.mjs`): `/` lands on the sample, each pick opens its own dashboard with its own data and banner, live over SSE and over WebSocket,
 Back and Forward return to the right source and are live again (that run found the stale dropdown after Back and a duplicate WebSocket close frame, both fixed), no horizontal scroll at 390 px, no console errors.
-`.github/workflows/test.yml` runs the suite on {ubuntu, macos} x {22.13.0, 22.x, 24.x}; it is `actionlint`-clean but **has not run on GitHub yet**.
+`.github/workflows/test.yml` runs the suite on GitHub on {ubuntu-latest (x86_64), macos-latest (arm64)} x {22.13.0, 22.x, 24.x}. The first run failed one job (Node 24 on Linux x86_64):
+a channel test paced its source with a 5 ms timer, so a stalled event loop let two chunks merge, which is the channel's documented behaviour for a client that is not keeping up. The test now
+paces on the flush itself, and the full matrix then passed three times in a row.
 
 **Verified manually in headless Google Chrome** (`scripts/ui-smoke.mjs`, run during development, not part of `npm test`; the `AUTH_TOKEN` login was checked the same way: no token gives the 401 message, `/?token=` redirects
 without the token and the dashboard goes live over SSE and over WebSocket on the cookie, which is HttpOnly): the page loads with no console errors or
@@ -501,7 +503,7 @@ cache-writes column, light/dark, 390 px, no console errors or CSP violations).
   `content_block_delta` / `text_delta`, `message_delta.stop_reason`, `error`, `message_stop`). That review is why `max_tokens` is now 1500 and an empty answer is an error: Sonnet 5.5 thinks by default and thinking
   tokens count against `max_tokens`. **`ANTHROPIC_API_KEY=... npm run check:llm` does the live check in a few seconds** (well under a cent): it reports time to first text and, if the API rejects
   `output_config.effort`, retries without it and tells you to set `ANTHROPIC_EFFORT=`. Until someone has run it, "works against the live API" is unproven.
-* Not tried: x86_64 Linux and Windows (the Claude Code importer assumes POSIX paths), Safari and Firefox (the code uses only standard `EventSource`/`WebSocket`/`fetch`), Node 20 and older (`node:sqlite` is absent).
+* Not tried: Windows (the Claude Code importer assumes POSIX paths), Safari and Firefox (the code uses only standard `EventSource`/`WebSocket`/`fetch`), Node 20 and older (`node:sqlite` is absent).
 * Behaviour behind a reverse proxy or on a real network link (buffering proxies, mobile networks); the slow link is simulated in-process and by a client that does not read.
 * Loopback socket buffers absorb several MB before backpressure is visible; the real-socket test therefore pushes ~24 MB and would need adjusting on a system with
   larger buffers.

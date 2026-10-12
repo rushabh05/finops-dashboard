@@ -36,7 +36,7 @@ crypto and the test runner; the WebSocket protocol is hand-written in `src/ws.js
 ## Good places to help
 
 * Run `npm run check:llm` with a real API key and report the result (the live Anthropic source has not been exercised; see the README).
-* Try other platforms: x86_64 Linux, Windows (the Claude Code importer assumes POSIX paths), Safari and Firefox.
+* Try other platforms: Windows (the Claude Code importer assumes POSIX paths), Safari and Firefox. CI already covers Linux x86_64 and macOS arm64 on Node 22.13.0, 22.x and 24.x.
 * Tell us how the detector behaves on your traffic (`npm run eval:real -- <db>` summarises it): its thresholds were tuned on a simulator, then only observed, not tuned, on BurstGPT.
 * Importers for other sources (a gateway's request log, another provider's usage export) following `src/import/`.
 
