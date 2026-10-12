@@ -24,6 +24,9 @@ function start(env) {
   child.stderr.on('data', (d) => { run.err += d; });
   run.exited = new Promise((resolveExit) => child.on('exit', (code, signal) => resolveExit({ code, signal })));
   run.url = () => waitUntil(() => /dashboard on (http:\/\/\S+)/.exec(run.out)?.[1], { timeout: 20_000, interval: 50, what: `the server to announce its URL (stdout: ${run.out.trim()} stderr: ${run.err.trim()})` });
+  // The server announces itself with several console.log calls; stdout is a pipe, so a line can arrive a moment after the one before it.
+  // Assert on a line only after waiting for it, never right after run.url().
+  run.line = (re) => waitUntil(() => re.exec(run.out)?.[0], { timeout: 20_000, interval: 50, what: `${re} in the server output (stdout: ${run.out.trim()} stderr: ${run.err.trim()})` });
   run.stop = async () => {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
     const r = await Promise.race([run.exited, new Promise((r2) => setTimeout(() => r2(null), 5000))]);
@@ -40,7 +43,7 @@ test('npm start (no DB_PATH): multi-database mode comes up, serves the switcher 
     const run = start({ ...QUIET, DATA_DIR: dir });
     try {
       const url = await run.url();
-      assert.match(run.out, /data sources in .*finops \(sample\)/);
+      await run.line(/data sources in .*finops \(sample\)/);
       assert.deepEqual(await (await fetch(`${url}/healthz`)).json(), { ok: true, mode: 'multi' });
       const sources = await (await fetch(`${url}/api/sources`)).json();
       assert.deepEqual(sources.sources.map((s) => s.id), ['finops']);
@@ -79,7 +82,7 @@ test('AUTH_TOKEN through the entry point: announced, enforced on every source', 
     const run = start({ ...QUIET, DATA_DIR: dir, AUTH_TOKEN: 'cli-token-0123456789abcdef' });
     try {
       const url = await run.url();
-      assert.match(run.out, /AUTH_TOKEN is set/);
+      await run.line(/AUTH_TOKEN is set/);
       assert.equal((await fetch(`${url}/d/finops/api/summary`)).status, 401);
       assert.equal((await fetch(`${url}/d/finops/api/summary`, { headers: { Authorization: 'Bearer cli-token-0123456789abcdef' } })).status, 200);
     } finally {

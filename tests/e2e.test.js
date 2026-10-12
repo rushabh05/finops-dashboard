@@ -298,12 +298,27 @@ test('the live simulator writes through the same path, raises alerts for the inj
   const cid = randomCid();
   const c = await new SseClient(app, { cid }).ready;
   await c.waitForEvent('snapshot');
-  assert.equal((await api(app, 'POST', '/api/sim', { body: { rate: 1500, running: true } })).status, 200);
-  const r = await api(app, 'POST', '/api/sim', { body: { inject: 'token_bloat', hours: 3 } });
+  // The simulated clock runs on requests, not wall time: at rate 1500 it covers ~2 simulated hours per real second, so a 3-hour injection
+  // lasted ~1.6 s - one stalled CI runner and the detector (which judges the current hour) never saw it. 300/s with a 12-hour window gives
+  // it ~30 s of real time and hundreds of detector passes.
+  assert.equal((await api(app, 'POST', '/api/sim', { body: { rate: 300, running: true } })).status, 200);
+  const r = await api(app, 'POST', '/api/sim', { body: { inject: 'token_bloat', hours: 12 } });
   assert.equal(r.json.anomalies.at(-1).kind, 'token_bloat');
-  const isBloat = (x) => x.k.startsWith('a:') && x.v.kind === 'tokens_per_request' && x.v.endpoint === '/v1/chat';
-  const alertEv = await c.waitForEvent('rows', (e) => e.data.rows.some(isBloat), { timeout: 40000, what: 'a prompt-bloat alert for /v1/chat pushed over the stream' });
-  const a = alertEv.data.rows.find(isBloat).v;
+  const dbAlert = () => app.db.prepare("SELECT id, tenant_id, status FROM alerts WHERE kind = 'tokens_per_request' AND endpoint = '/v1/chat' ORDER BY id LIMIT 1").get();
+  const diagnose = () => `sim: ${JSON.stringify(app.sim.status())}; alerts in db: ${JSON.stringify(app.db.prepare('SELECT id, kind, tenant_id, endpoint, status FROM alerts').all())}; stream events: ${JSON.stringify(c.events.map((e) => e.event).reduce((m, k) => ({ ...m, [k]: (m[k] || 0) + 1 }), {}))}`;
+  const row = await waitUntil(dbAlert, { timeout: 40000, what: `the detector to raise a prompt-bloat alert for /v1/chat (${diagnose()})` });
+  // ...and the client hears about it: in a rows frame, or inside a snapshot if the channel had to resync (both are correct)
+  const isBloatRow = (x) => x.k.startsWith('a:') && x.v.id === row.id;
+  const pushed = () => {
+    for (const e of c.events) {
+      if (e.event === 'rows') { const hit = e.data.rows.find(isBloatRow); if (hit) return hit.v; }
+      if (e.event === 'snapshot') { const hit = e.data.alerts.find((a) => a.id === row.id); if (hit) return hit; }
+    }
+    return null;
+  };
+  const a = await waitUntil(pushed, { timeout: 20000, what: `alert ${row.id} to reach the client over the stream (${diagnose()})` });
+  assert.equal(a.kind, 'tokens_per_request');
+  assert.equal(a.endpoint, '/v1/chat');
   assert.equal(a.tenant_id, null);
   assert.equal(a.status, 'open');
   await api(app, 'POST', '/api/sim', { body: { running: false } });
