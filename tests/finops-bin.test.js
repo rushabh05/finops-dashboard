@@ -188,8 +188,10 @@ test('finops proxy + finops start, as real processes: a call made through the pr
     const dash = serve(['--data-dir', data, '--port', String(dashPort)]);
     try {
       const proxyUrl = await waitUntil(() => /listening on (http:\/\/\S+)/.exec(proxy.out)?.[1], { timeout: 20_000, interval: 50, what: `the proxy to start (stdout: ${proxy.out} stderr: ${proxy.err})` });
-      assert.match(proxy.out, /export ANTHROPIC_BASE_URL=http:\/\/127\.0\.0\.1:\d+/, 'it tells you how to point your app at it');
-      assert.match(proxy.out, /created .*live\.db with the real price list/);
+      // the proxy prints these with separate writes: wait for each line instead of asserting the moment the first one arrives
+      const sees = (re, what) => waitUntil(() => re.test(proxy.out), { timeout: 20_000, interval: 50, what: `${what} (stdout: ${proxy.out} stderr: ${proxy.err})` });
+      await sees(/export ANTHROPIC_BASE_URL=http:\/\/127\.0\.0\.1:\d+/, 'the proxy to say how to point your app at it');
+      await sees(/created .*live\.db with the real price list/, 'the proxy to say it created the live database');
       const url = await dash.url();
 
       const res = await fetch(`${proxyUrl}/v1/messages`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': 'sk-ant-test-key' }, body: JSON.stringify({ model: 'claude-sonnet-5-5', messages: [{ role: 'user', content: 'hi' }] }) });

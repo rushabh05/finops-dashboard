@@ -114,7 +114,7 @@ function runImporter(args, { env = {} } = {}) {
     child.stdout.on('data', (d) => { out += d; });
     child.stderr.on('data', (d) => { err += d; });
     child.on('error', reject);
-    child.on('exit', (code) => resolveRun({ code, out, err }));
+    child.on('close', (code) => resolveRun({ code, out, err })); // 'close', not 'exit': only 'close' means every byte of output has been read
   });
 }
 const withDir = async (fn) => { const dir = mkdtempSync(join(tmpdir(), 'finops-usage-')); try { await fn(dir); } finally { rmSync(dir, { recursive: true, force: true }); } };
