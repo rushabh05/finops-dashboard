@@ -29,7 +29,7 @@ function serve(args, env = {}) {
   child.stderr.on('data', (d) => { run.err += d; });
   run.exited = new Promise((r) => child.on('exit', (code, signal) => r({ code, signal })));
   run.url = () => waitUntil(() => /dashboard on (http:\/\/\S+)/.exec(run.out)?.[1], { timeout: 20_000, interval: 50, what: `the server to announce its URL (stdout: ${run.out.trim()} stderr: ${run.err.trim()})` });
-  const sweep = () => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* the group is already gone */ } };
+  const sweep = () => killTree(child);
   run.stop = async () => {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM'); // to the CLI only, like `kill <pid>`: it must pass it on
     const r = await Promise.race([run.exited, new Promise((r2) => setTimeout(() => r2(null), 8000))]);
@@ -40,7 +40,17 @@ function serve(args, env = {}) {
   return run;
 }
 
-const withDir = async (fn) => { const dir = mkdtempSync(join(tmpdir(), 'finops-bin-')); try { await fn(dir); } finally { rmSync(dir, { recursive: true, force: true }); } };
+// An open file cannot be deleted on Windows, and a killed process releases its files a moment late: retry the cleanup.
+const withDir = async (fn) => { const dir = mkdtempSync(join(tmpdir(), 'finops-bin-')); try { await fn(dir); } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); } };
+
+/**
+ * Stop a CLI process AND the server it started. POSIX: the CLI forwards SIGTERM, and the whole process group is swept as a safety net. Windows has no
+ * signals: kill() ends the CLI at once without running its handlers, so its server child would be left running with the database open; kill the tree.
+ */
+function killTree(child) {
+  if (process.platform === 'win32') { try { spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' }); } catch { /* already gone */ } }
+  else { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* the group is already gone */ } }
+}
 
 /** A miniature ~/.claude/projects: one project, one session, one prompt answered by one API response. Message text is a canary. */
 function makeTranscripts(dir) {
@@ -157,7 +167,7 @@ function spawnCli(args, env = {}) {
   run.stop = async () => {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
     const r = await Promise.race([run.exited, new Promise((r2) => setTimeout(() => r2(null), 8000))]);
-    try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ }
+    killTree(child);
     if (!r) await run.exited;
     return r;
   };
