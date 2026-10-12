@@ -120,8 +120,9 @@ function runImporter(args, { env = {} } = {}) {
 const withDir = async (fn) => { const dir = mkdtempSync(join(tmpdir(), 'finops-usage-')); try { await fn(dir); } finally { rmSync(dir, { recursive: true, force: true }); } };
 const priceBook = () => { const db = openDb(':memory:'); installPrices(db); return new PriceBook(db); };
 
-test('the importer asks for what the documentation says: day-aligned RFC 3339 times, 1h buckets at the maximum limit, grouped by model, tier, context window and workspace; the key only in a header', async () => {
+test('the importer asks for what the documentation says: day-aligned RFC 3339 times, 1h buckets at the maximum limit, grouped by model, tier, context window and workspace; the key only in a header', async (t) => {
   const api = await fakeAdminApi();
+  t.after(() => api.close());
   await withDir(async (dir) => {
     const r = await runImporter(['--base-url', api.url, '--db', join(dir, 'u.db'), '--days', '3'], { env: { DATA_DIR: dir } });
     assert.equal(r.code, 0, `${r.out}\n${r.err}`);
@@ -143,11 +144,11 @@ test('the importer asks for what the documentation says: day-aligned RFC 3339 ti
     assert.deepEqual(c.params.getAll('group_by[]'), ['description', 'workspace_id']);
     assert.equal(c.params.get('ending_at'), new Date(Math.floor(Date.now() / D) * D).toISOString().replace('.000Z', 'Z'), 'complete days only: the bill for today is still being written');
   });
-  await api.close();
 });
 
-test('end to end: rows, tokens, tenants and cost equal sums computed independently from the fake data; skips and caveats are reported; the key is never printed or stored', async () => {
+test('end to end: rows, tokens, tenants and cost equal sums computed independently from the fake data; skips and caveats are reported; the key is never printed or stored', async (t) => {
   const api = await fakeAdminApi();
+  t.after(() => api.close());
   await withDir(async (dir) => {
     const db = join(dir, 'anthropic-usage.db');
     const r = await runImporter(['--base-url', api.url, '--db', db, '--days', '3'], { env: { DATA_DIR: dir } });
@@ -200,11 +201,11 @@ test('end to end: rows, tokens, tenants and cost equal sums computed independent
     assert.equal(src.label, 'Anthropic usage (Admin API)');
     assert.equal(src.kind, 'imported');
   });
-  await api.close();
 });
 
-test('a long period is fetched page by page (has_more / next_page), and a failing cost report does not fail the import', async () => {
-  const api = await fakeAdminApi({ failCost: 400 }); // (5xx retries are covered by the AdminClient test; a 4xx fails at once)
+test('a long period is fetched page by page (has_more / next_page), and a failing cost report does not fail the import', async (t) => {
+  const api = await fakeAdminApi({ failCost: 400 });
+  t.after(() => api.close()); // (5xx retries are covered by the AdminClient test; a 4xx fails at once)
   await withDir(async (dir) => {
     const r = await runImporter(['--base-url', api.url, '--db', join(dir, 'u.db'), '--days', '10'], { env: { DATA_DIR: dir } });
     assert.equal(r.code, 0, `${r.out}\n${r.err}`);
@@ -216,11 +217,11 @@ test('a long period is fetched page by page (has_more / next_page), and a failin
     assert.match(r.out, /Cost check failed: the Admin API answered HTTP 400.*The import itself is complete\./);
     assert.match(r.out, /Rollups vs brute-force recomputation: consistent/);
   });
-  await api.close();
 });
 
-test('errors say what to do: a refused key, a missing key, bad options, a remote http URL; --no-cost-check skips the bill; --replace is needed to overwrite', async () => {
+test('errors say what to do: a refused key, a missing key, bad options, a remote http URL; --no-cost-check skips the bill; --replace is needed to overwrite', async (t) => {
   const api = await fakeAdminApi();
+  t.after(() => api.close());
   await withDir(async (dir) => {
     const db = join(dir, 'u.db');
     const refused = await runImporter(['--base-url', api.url, '--db', db], { env: { ANTHROPIC_ADMIN_KEY: 'sk-ant-wrong-key', DATA_DIR: dir } });
@@ -249,7 +250,6 @@ test('errors say what to do: a refused key, a missing key, bad options, a remote
     const replaced = await runImporter(['--base-url', api.url, '--db', db, '--days', '2', '--no-cost-check', '--replace'], { env: { DATA_DIR: dir } });
     assert.equal(replaced.code, 0, `${replaced.out}\n${replaced.err}`);
   });
-  await api.close();
 });
 
 test('--tenant-by api-key / account / service-account group by that dimension; ids that are not valid tenant names are made valid', () => {
