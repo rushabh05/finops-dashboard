@@ -7,7 +7,7 @@ import { dirname } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { openDb, getMeta } from './db.js';
 import { RE_TENANT, RE_ENDPOINT } from './ingest.js';
-import { ALL_PRICES, installPrices } from './import/prices.js';
+import { installPrices, normalizeModel } from './import/prices.js';
 import { usageFields } from './import/claude-code.js';
 import { isLoopbackHost } from './security.js';
 
@@ -33,7 +33,6 @@ const RE_ID = /^[A-Za-z0-9._:#-]{1,100}$/;
 const RE_SOURCE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
 const MAX_PARSE_BYTES = 8 * 1024 * 1024; // a non-streamed response bigger than this is forwarded but not read for usage
 const SAMPLE_SOURCE = 'finops';
-const PRICED = new Set(ALL_PRICES.map((p) => p.model));
 
 /** An http(s) base URL: https unless it is this machine (the dashboard URL carries a token; the upstream carries API keys). */
 export function parseBase(raw, name) {
@@ -43,13 +42,6 @@ export function parseBase(raw, name) {
   if (!(u.protocol === 'https:' || (u.protocol === 'http:' && loopback))) throw new Error(`${name} must be https (plain http is only accepted for localhost)`);
   if (u.username || u.password) throw new Error(`${name} must not contain credentials`);
   return u;
-}
-
-/** Responses name the model with a date suffix (claude-haiku-4-5-20251001); use the dated name when it is priced, else the alias. */
-export function normalizeModel(m) {
-  if (PRICED.has(m)) return m;
-  const stripped = m.replace(/-\d{8}$/, '');
-  return PRICED.has(stripped) ? stripped : m;
 }
 
 const defined = (o) => Object.fromEntries(Object.entries(o || {}).filter(([, v]) => v !== null && v !== undefined));
@@ -192,6 +184,8 @@ class Recorder {
     }
   }
 }
+
+export { normalizeModel }; // the tests (and callers) have always imported it from here
 
 export function createProxy({
   upstream = 'https://api.anthropic.com', dashboard = 'http://127.0.0.1:8787', source = 'live', tenant = 'default',

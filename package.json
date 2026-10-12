@@ -49,6 +49,7 @@
     "eval:detector": "node --disable-warning=ExperimentalWarning scripts/eval-detector.js",
     "smoke:ui": "node --disable-warning=ExperimentalWarning scripts/ui-smoke.mjs",
     "import:claude-code": "node --disable-warning=ExperimentalWarning scripts/import-claude-code.js",
+    "import:anthropic-usage": "node --disable-warning=ExperimentalWarning scripts/import-anthropic-usage.js",
     "import:trace": "node --disable-warning=ExperimentalWarning scripts/import-trace.js",
     "check:llm": "node --disable-warning=ExperimentalWarning scripts/check-anthropic.js",
     "proxy": "node --disable-warning=ExperimentalWarning scripts/proxy.js",

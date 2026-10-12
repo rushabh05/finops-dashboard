@@ -44,6 +44,14 @@ export const GPT_PRICES = [
 
 export const ALL_PRICES = [...CLAUDE_PRICES, ...GPT_PRICES];
 
+const PRICED_MODELS = new Set(ALL_PRICES.map((p) => p.model));
+/** APIs name the model with a date suffix (claude-haiku-4-5-20251001); use that name when it is priced, else the alias without the date. */
+export function normalizeModel(m) {
+  if (PRICED_MODELS.has(m)) return m;
+  const stripped = m.replace(/-\d{8}$/, '');
+  return PRICED_MODELS.has(stripped) ? stripped : m;
+}
+
 /** Parse "model=in,out[,read[,write5m[,write1h]]]" (USD per Mtok). Missing read defaults to the input price, writes to 0 (unset). */
 export function parsePriceArg(arg) {
   const m = /^([A-Za-z0-9._:-]{1,64})=([0-9.,]+)$/.exec(arg || '');

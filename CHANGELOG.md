@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+* **`finops import anthropic-usage`**: your organization's token usage from Anthropic's Usage & Cost Admin API (needs an Admin API key; individual accounts have none), by workspace (or API key / account / service account) and model, priced at list prices,
+  with a check against what Anthropic billed (cost report, cents) per model and tier. Aggregated data: one row per hour and group, not per API call, and labelled as such (no detection is run). A model and its dated alias are merged into one group
+  (two rows with one id would have let ingest drop one silently: found by the unit test). **Tested against a fake Admin API that follows the documentation, not the real one.**
 * **Docker image** (`Dockerfile`, `.dockerignore`, `scripts/docker-smoke.sh`, a `docker` CI job). `finops` is the entry point; runs as the unprivileged `node` user; data in `/data`; a `HEALTHCHECK`. `AUTH_TOKEN` is required (the server refuses
   `0.0.0.0` without it, and the image sets no insecure default); `.dockerignore` keeps `data/` (gigabytes of local databases) out of the build context. The smoke script is run by CI and checks 11 things, including the Host-header refusal.
 * **`finops proxy`: live cost tracking.** A local proxy (`src/proxy.js`) for the Anthropic Messages API: point `ANTHROPIC_BASE_URL` at it and every call's tenant, endpoint, status, duration, model and token counts

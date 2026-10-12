@@ -47,7 +47,7 @@ Requires **Node >= 22.13** (`node:sqlite` without a flag). No `npm install` is n
 ```
 git clone https://github.com/rushabh05/finops-dashboard.git && cd finops-dashboard
 npm start                    # http://127.0.0.1:8787  (first run seeds 30 days of simulated history in ~3 s)
-npm test                     # 181 tests, ~30 s
+npm test                     # 189 tests, ~30 s
 ```
 
 Open the page and wait a few seconds: the simulator writes live traffic and plants three anomalies (a tenant cost spike, prompt bloat,
@@ -79,6 +79,7 @@ finops start --open                                     # the sample + everythin
 | `finops start [--port N] [--host H] [--data-dir DIR] [--db FILE] [--open]` | serves every database in the data directory (or exactly `--db FILE`); `--open` opens the browser once the server is up |
 | `finops import claude-code [--days N] [--replace] ...` | your own Claude Code usage (metadata only, never message text); every option of `npm run import:claude-code` works |
 | `finops import trace <file.csv> [--format ...] ...` | a public trace (BurstGPT, Azure LLM inference); every option of `npm run import:trace` works |
+| `finops import anthropic-usage [--days N] [--tenant-by ...] ...` | your **organization's** usage from Anthropic's Admin API (`ANTHROPIC_ADMIN_KEY`), checked against the bill: see [below](#your-organizations-anthropic-usage-scriptsimport-anthropic-usagejs) |
 | `finops proxy [--port N] [--tenant NAME] [--source live] [--upstream URL] [--verbose]` | record your app's Anthropic API calls **live**: see [Live data](#live-data-finops-proxy) |
 | `finops check-llm` | one tiny request with `ANTHROPIC_API_KEY`, to confirm explanations can use the real API |
 | `finops check-webhook` | one test message to `ALERT_WEBHOOK_URL`, to confirm [alert notifications](#alert-notifications) are set up |
@@ -280,13 +281,14 @@ injected, on a schedule or on demand (`{inject: ...}`): `tenant_cost_spike` (one
 
 ## Importing real data
 
-The dashboard needs a source of requests. Besides the simulator and `POST /api/ingest` there are two importers. Both write
+The dashboard needs a source of requests. Besides the simulator, `POST /api/ingest` and the [proxy](#live-data-finops-proxy) there are importers. They write
 **straight into a SQLite file through the same `Ingestor`** the HTTP route uses (validation, cost from `model_prices`, raw rows + rollups in one
 transaction per batch), so the HTTP body and batch caps do not apply but every other rule does. Run them with the server stopped (or on another file).
 
 | Database (built by) | What it holds | Size / time |
 |---|---|---|
 | `data/claude-code.db` (`npm run import:claude-code`) | your own Claude Code usage: ~47K API responses, ~3.3K prompts and sub-agent runs, Aug 12 to Oct 12 | 12 MB, 5 s |
+| `data/anthropic-usage.db` (`npm run import:anthropic-usage`) | your organization's token usage from Anthropic's Admin API, by workspace and model, checked against the bill (needs an Admin key) | depends on the org |
 | `data/burstgpt.db` (`npm run import:trace -- .../BurstGPT_1.csv`) | [BurstGPT](https://github.com/HPMLL/BurstGPT) (CC BY 4.0): 1.43M real Azure OpenAI requests over 61 days | 376 MB, 13 s |
 | `data/azure-conv.db`, `data/azure-code.db` | [Azure LLM inference trace 2023](https://github.com/Azure/AzurePublicDataset) (CC BY 4.0): one hour of a conversation / a code service | 6 / 2.5 MB, <1 s |
 
@@ -324,6 +326,34 @@ Limits: usage that is not in the local files cannot be imported (the dashboard t
 transcripts were removed, and *higher* than `/cost` where that counter missed sub-agent usage); claude.ai chat in the browser is not recorded locally; web-search fees and
 fast-mode surcharges are not priced (counted and warned about); Windows-style paths are not handled; Haiku 5.5's higher tier above 100K-token prompts is not modelled.
 Options: `--days N` / `--since YYYY-MM-DD`, `--root DIR`, `--db FILE`, `--replace`, `--detect-days N`, `--price ...`.
+
+### Your organization's Anthropic usage (`scripts/import-anthropic-usage.js`)
+
+For a **team** (Claude Console / API): the Usage & Cost Admin API reports the whole organization's token usage by workspace and model, and what it was billed.
+
+```
+ANTHROPIC_ADMIN_KEY=sk-ant-admin01-... finops import anthropic-usage --days 30        # then: finops start
+```
+
+**It needs an organization Admin API key** (`sk-ant-admin01-...`, or another Admin credential). The endpoints do not exist for individual accounts, and workspace API keys do not work: a refused key is explained, not just
+reported. The key is read from the environment only (never a flag), goes only to the `--base-url` (https://api.anthropic.com) in an `x-api-key` header, and appears nowhere in the output or the database (a test greps for it).
+
+**What it is, and is not.** The usage report has token counts per hour and group: no request counts, no latency. So each row is **one hour x one (workspace, model, service tier, context window) group, not one API call**: the database's
+banner says so, request counts / cost per request / tokens per request mean nothing on it, and detection is skipped. What it gives you is exactly right for attribution: spend by workspace (or `--tenant-by api-key|account|service-account`) and model,
+over time. Tenant = the id (`wrkspc_...`; the default workspace is `default-workspace`); endpoint = `/usage/<tier>/<context window>`.
+
+| Dashboard | Usage report |
+|---|---|
+| `input_tokens` | `uncached_input_tokens` + `cache_read_input_tokens` + both `cache_creation` buckets (the whole prompt, as everywhere); `cache_write_*` split by TTL |
+| cost | tokens x `model_prices` (list prices). Batch, priority, flex and long-context usage is priced at **standard** rates and flagged on every run; web search / code execution fees are not tokens and are not included |
+| time | the bucket start; `--bucket 1h` (default, up to 168 buckets per page, pages followed) or `1d`; whole UTC days |
+
+**It checks itself against the bill.** After importing, it fetches the cost report (what Anthropic billed; `amount` is in **cents**) for the complete days and compares, per model and tier: for the standard tier the totals should agree
+(a ratio far from 1 means a price in `src/import/prices.js` is out of date, or a premium applies); batch usage is expected to read about x2 because it is billed at half and priced here at standard. The cost report does not cover Priority Tier.
+A failing cost check never fails the import. Rows for a model with no price are skipped and named (`--price MODEL=in,out,...`).
+
+**Tested against a fake Admin API that follows the documented contract** (parameters, headers, pagination, cents), not against Anthropic's: no Admin key was available while this was built. Options: `--days N` / `--since YYYY-MM-DD`,
+`--bucket`, `--tenant-by`, `--db`, `--replace`, `--base-url`, `--no-cost-check`, `--price`.
 
 ### Public traces (`scripts/import-trace.js`)
 
@@ -567,7 +597,7 @@ What it will and will not do, on purpose:
 
 ## Tests
 
-`npm test` runs 181 `node:test` tests (about 20-30 s, run serially):
+`npm test` runs 189 `node:test` tests (about 20-30 s, run serially):
 
 * **pricing**: cached tokens and cache writes (5-minute / 1-hour), rounding, `effective_from`, a `BigInt` reference on 5,000 random inputs each with and without writes;
 * **ingest**: validation (every field), batch cap, idempotency, atomic rollback, **rollups vs brute-force recomputation** after randomised
@@ -595,6 +625,10 @@ What it will and will not do, on purpose:
   isolation between sources (data, tags, simulator refused on imports), static assets and SSE/WebSocket under `/d/<id>/`, unknown or traversal-style paths, Origin/Host under the prefix, writes landing in the
   right database, the sample simulator pausing when nobody watches and honouring a manual pause, `DEFAULT_SOURCE`, authentication at the front door (the cookie flow keeps the prefix), the non-loopback guard, and
   closing every workspace; plus a **static check that every URL the page uses is relative** (what makes `/d/<id>/` work) and a WebSocket test that the server answers a client close with exactly one close frame;
+* **the Anthropic usage importer** (`import-anthropic-usage.test.js`, against a fake Admin API that validates every parameter the documentation lists, paginates and bills at known rates): the request it makes (day-aligned RFC 3339 times, 1h buckets
+  at the maximum limit, the four `group_by[]` values, the key only in a header, a User-Agent), rows / tokens / tenants / endpoints / cost equal to sums computed independently from the fake data, skipped (unpriced) and flagged (batch, web
+  search) usage reported, the bill check (standard ratio 1.000, batch x2), the key printed or stored nowhere, pages followed, a failing cost report not failing the import, refused / missing keys and bad options explained, `--replace`
+  required to overwrite, rows of one group merged (a model and its dated alias would otherwise share an id and one would be dropped silently), the client's retries (`Retry-After`, 5xx, no redirects, unsafe base URLs refused), and the cents arithmetic.
 * **the proxy** (`proxy.test.js`, a fake Anthropic upstream and a REAL dashboard): a non-streamed call and a streamed one split at 7-byte boundaries (mid-line, mid-JSON, mid-character) pass through byte for byte and are
   recorded with the exact cost; compressed responses; 429s and mid-stream errors recorded as failures; a client that gives up mid-stream (499 with the usage seen); dated model aliases; an unpriced model rejected
   without losing its batch-mates, and named; label headers (stripped before forwarding, invalid ones ignored and logged once); other paths not recorded; **a request path can never pick another host**; **no key or prompt in the
@@ -639,6 +673,7 @@ cache-writes column, light/dark, 390 px, no console errors or CSP violations).
 
 **Not verified**
 
+* `import-anthropic-usage.js` has never talked to Anthropic's real Admin API (see [above](#your-organizations-anthropic-usage-scriptsimport-anthropic-usagejs)); only a fake that follows the documentation.
 * `finops proxy` has never talked to the real api.anthropic.com (see [Live data](#live-data-finops-proxy)); only a fake of it.
 * The Claude Code importer assumes the transcript layout of the Claude Code version on this machine (message ids, `cost-state` entries, `agentId`, `attributionAgent`, `cache_creation`
   breakdown). Other versions may differ: unknown shapes are skipped, never guessed. Only macOS paths were tried.
