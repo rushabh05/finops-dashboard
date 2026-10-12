@@ -1,0 +1,12 @@
+# Only what the app needs goes into the image (the Dockerfile copies an explicit list; this keeps the build CONTEXT small and,
+# above all, keeps local databases out of it: data/ can hold gigabytes of real usage).
+.git
+.github
+data
+docs
+tests
+node_modules
+*.log
+.DS_Store
+CHANGELOG.md
+CONTRIBUTING.md

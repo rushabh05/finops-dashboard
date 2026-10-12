@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+* **Docker image** (`Dockerfile`, `.dockerignore`, `scripts/docker-smoke.sh`, a `docker` CI job). `finops` is the entry point; runs as the unprivileged `node` user; data in `/data`; a `HEALTHCHECK`. `AUTH_TOKEN` is required (the server refuses
+  `0.0.0.0` without it, and the image sets no insecure default); `.dockerignore` keeps `data/` (gigabytes of local databases) out of the build context. The smoke script is run by CI and checks 11 things, including the Host-header refusal.
 * **`finops proxy`: live cost tracking.** A local proxy (`src/proxy.js`) for the Anthropic Messages API: point `ANTHROPIC_BASE_URL` at it and every call's tenant, endpoint, status, duration, model and token counts
   (never prompts, answers, headers or keys) is recorded into a `live` database of the dashboard through its ordinary ingest endpoint. Streaming and compressed responses, failures (429/5xx/529) and client aborts (499) are
   recorded; the usage mapping is the Claude Code importer's own function; unpriced models are named and counted without losing their batch. Safety: fixed upstream (a request path cannot pick another host), loopback only,

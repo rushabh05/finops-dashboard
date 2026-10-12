@@ -23,3 +23,11 @@ jobs:
       - run: node --version
       # no `npm ci`: the project has no dependencies
       - run: npm test
+
+  docker:
+    name: docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # builds the image and checks what the README promises: refuses to start without AUTH_TOKEN, serves, auth, Host check, non-root, health, volume
+      - run: scripts/docker-smoke.sh finops-dashboard:ci

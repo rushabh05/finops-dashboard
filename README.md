@@ -90,6 +90,27 @@ lose your imports. `npm start` and `npm run import:*` are unchanged and still us
 `AUTH_TOKEN`, `ANTHROPIC_API_KEY`, ...) is read from the environment exactly as in [Configuration](#configuration). There is deliberately no `--token` flag: a secret on the command line is
 visible to every user of the machine in `ps`.
 
+### Docker
+
+```
+docker build -t finops-dashboard .                       # from a clone; Node + these files, no dependencies to install (347 MB, mostly the Node base image)
+export FINOPS_TOKEN="$(openssl rand -hex 16)"
+docker run -d --name finops -p 127.0.0.1:8787:8787 -e AUTH_TOKEN="$FINOPS_TOKEN" -v finops-data:/data finops-dashboard
+open "http://127.0.0.1:8787/?token=$FINOPS_TOKEN"        # once per browser: it sets a session cookie and drops the token from the address bar
+```
+
+- **A token is required, on purpose.** A container has to listen on `0.0.0.0` to be reachable through a published port, and the server refuses a non-loopback address without `AUTH_TOKEN`
+  (>= 16 characters). The image therefore has no insecure default to forget about. Publish the port to your own machine (`127.0.0.1:...`) unless something in front of it handles access.
+- **Same port on both sides**, or add the name you browse to: the Host-header check allows `127.0.0.1:<PORT>` and `localhost:<PORT>` for the port the server listens on, so
+  `-p 127.0.0.1:9000:8787` needs `-e ALLOWED_HOSTS=127.0.0.1:9000,localhost:9000` (a request with any other `Host` is refused with 403, which is the DNS-rebinding guard working).
+- **Data** is in `/data` (mount a volume; the container runs as the unprivileged `node` user, uid 1000). On Linux with a bind mount, `--user "$(id -u):$(id -g)"` makes the files yours.
+- **The `finops` command is the entry point**, so every subcommand works in the container. For example your Claude Code history, read-only:
+  `docker run --rm -v finops-data:/data -v "$HOME/.claude/projects:/claude:ro" finops-dashboard import claude-code --root /claude`.
+- **The proxy runs on the host, beside your app** (it only listens on `127.0.0.1`, and that is not reachable through a published port), with the container's data folder mounted from the host:
+  `docker run ... -v "$HOME/.finops-dashboard:/data" ...`, then `AUTH_TOKEN="$FINOPS_TOKEN" finops proxy` on the host (the same data folder by default). Checked with a fake upstream: the call made through the host proxy shows up in the containerised dashboard.
+- Nothing is published to a registry: build it yourself. `scripts/docker-smoke.sh` is the check CI runs on every push (builds, refuses without a token, serves, 401 without a token, Bearer and the cookie login, a foreign
+  `Host` is refused, non-root, mounted volume, `HEALTHCHECK` healthy).
+
 ### Live data: `finops proxy`
 
 The importers show history. To watch what your own app spends **as it spends it**, send its Anthropic calls through the proxy: nothing to change in the app but a base URL.
@@ -165,9 +186,10 @@ src/
   ws.js          RFC 6455 handshake + frames      queries.js    REST queries, CSV export
   security.js    allowlists, body caps, origin    server.js     routes, SSE + WS endpoints, app wiring
   notify.js      alert webhooks (Slack/Discord/JSON)   proxy.js      `finops proxy`: record live Anthropic calls
+Dockerfile       the image (scripts/docker-smoke.sh checks it; .dockerignore keeps data/ out of the build)
   multi.js       multi-database front door: discovers data/*.db, routes /d/<id>/..., the source switcher's list
 bin/finops.js    the `finops` command (start, import, check-llm): a front door over server.js and scripts/
-  import/        claude-code.js (transcripts -> requests), traces.js (BurstGPT / Azure CSV -> requests),
+  import/        claude-code.js (transcripts -> requests), traces.js (BurstGPT / Azure CSV -> requests), anthropic-usage.js (Admin API -> usage rows),
                  prices.js (real dated price lists), common.js (protected import DB, batch writer, detector backfill)
 public/          index.html, style.css, app.js, charts.js, stream.js, dom.js, format.js
 docs/images/     README screenshots (simulated and public data only)
