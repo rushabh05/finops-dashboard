@@ -10,6 +10,11 @@ updates and alerts to the browser with real backpressure, detects cost anomalies
 LLM-written explanation of any anomaly into a side panel. It can also import **your own Claude Code usage** and **public LLM traffic traces**,
 and a built-in **data source switcher** moves between the simulated sample and any imported database.
 
+<p align="center">
+<a href="docs/media/finops-promo.mp4"><img src="docs/media/finops-promo.gif" alt="A 10-second loop from the film: the live dashboard with a cost spike, spend per tenant, and an alert explaining itself. Click for the full 48-second film." width="720"></a><br>
+<sub>10 seconds of the <a href="docs/media/finops-promo.mp4">48-second film</a> (with sound). Simulated sample data.</sub>
+</p>
+
 ![The dashboard on simulated data: spend per tenant over time, tiles, and anomaly alerts](docs/images/dashboard-sample.png)
 
 <table>
