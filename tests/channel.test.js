@@ -120,7 +120,17 @@ test('tokens: ordered and lossless; adjacent chunks merge while the client is sl
 
 test('a fast client sees every chunk as its own frame (no needless merging)', async () => {
   const { ch, t } = mk();
-  const g = ch.startGeneration({ id: 'g1', source: chunks(['a ', 'b ', 'c '], { delay: 5 }) });
+  // A "fast client" is one that has flushed a chunk before the next arrives. Pace the source on the flush itself instead of on a
+  // timer: with a 5 ms timer, an event-loop stall (a busy shared CI runner) lets the next chunk arrive before the flush runs, and
+  // merging those two is exactly what the channel is meant to do, so the test was asserting a timing accident.
+  async function* paced() {
+    const texts = ['a ', 'b ', 'c '];
+    for (let i = 0; i < texts.length; i++) {
+      yield texts[i];
+      await waitUntil(() => t.of('token').length > i, { what: `chunk ${i + 1} to be flushed` });
+    }
+  }
+  const g = ch.startGeneration({ id: 'g1', source: paced() });
   await g.done;
   ch.pump();
   assert.equal(t.of('token').length, 3);
