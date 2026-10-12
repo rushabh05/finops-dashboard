@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { waitUntil } from './helpers.js';
+import { assertStoppedCleanly, waitUntil } from './helpers.js';
 
 /*
  * The `finops` command (bin/finops.js) is a front door over the same entry points `npm start` and `npm run import:*` use. These tests run it
@@ -23,7 +23,7 @@ const QUIET = { SEED_DAYS: '1', SEED_VOLUME: '0.1', SIM_AUTOSTART: '0' };
 const finops = (args, env = {}) => spawnSync(process.execPath, [BIN, ...args], { cwd: ROOT, encoding: 'utf8', env: { ...process.env, ...CLEAN, ...env } });
 
 function serve(args, env = {}) {
-  const child = spawn(process.execPath, [BIN, 'start', '--port', '0', '--host', '127.0.0.1', ...args], { cwd: ROOT, env: { ...process.env, ...CLEAN, ...QUIET, ...env }, stdio: ['ignore', 'pipe', 'pipe'], detached: true }); // own process group, so a leftover server can be swept
+  const child = spawn(process.execPath, [BIN, 'start', '--port', '0', '--host', '127.0.0.1', ...args], { cwd: ROOT, env: { ...process.env, ...CLEAN, ...QUIET, ...env }, stdio: ['ignore', 'pipe', 'pipe'], detached: true, windowsHide: true }); // own process group, so a leftover server can be swept
   const run = { child, out: '', err: '' };
   child.stdout.on('data', (d) => { run.out += d; });
   child.stderr.on('data', (d) => { run.err += d; });
@@ -92,7 +92,7 @@ test('finops start --data-dir: creates the directory private, serves it as multi
       await waitUntil(() => run.out.includes(`data sources in ${data}`), { what: `the server to name the data directory (stdout: ${run.out.trim()})` });
     } finally {
       const r = await run.stop();
-      assert.equal(r?.code, 0, `exit: ${JSON.stringify(r)} stderr: ${run.err}`);
+      assertStoppedCleanly(assert, r, `stderr: ${run.err}`);
     }
   });
 });
@@ -118,7 +118,7 @@ test('finops import claude-code, then finops start: the import lands in the data
       assert.deepEqual([totals.requests, totals.llm_calls, totals.tokens_in, totals.tokens_out], [1, 1, 100, 50], 'the one prompt + response in the fixture, nothing else');
       assert.ok(totals.cost_micro_usd > 0);
     } finally {
-      assert.equal((await run.stop())?.code, 0);
+      assertStoppedCleanly(assert, await run.stop());
     }
   });
 });
@@ -141,7 +141,7 @@ test('finops start --db FILE: exactly that database at the root, no source switc
       assert.deepEqual(await (await fetch(`${url}/api/sources`)).json(), { current: null, sources: [] });
       assert.equal((await fetch(`${url}/api/stats`)).status, 200);
     } finally {
-      assert.equal((await run.stop())?.code, 0);
+      assertStoppedCleanly(assert, await run.stop());
     }
   });
 });
@@ -149,7 +149,7 @@ test('finops start --db FILE: exactly that database at the root, no source switc
 const freePort = () => new Promise((resolve) => { const srv = net.createServer().listen(0, '127.0.0.1', () => { const p = srv.address().port; srv.close(() => resolve(p)); }); });
 
 function spawnCli(args, env = {}) {
-  const child = spawn(process.execPath, [BIN, ...args], { cwd: ROOT, env: { ...process.env, ...CLEAN, ...QUIET, ...env }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+  const child = spawn(process.execPath, [BIN, ...args], { cwd: ROOT, env: { ...process.env, ...CLEAN, ...QUIET, ...env }, stdio: ['ignore', 'pipe', 'pipe'], detached: true, windowsHide: true });
   const run = { child, out: '', err: '' };
   child.stdout.on('data', (d) => { run.out += d; });
   child.stderr.on('data', (d) => { run.err += d; });
@@ -209,8 +209,8 @@ test('finops proxy + finops start, as real processes: a call made through the pr
       assert.deepEqual(rows.map((r) => [r.tenant_id, r.endpoint, r.status, r.llm_calls]), [['checkout', '/v1/messages', 200, 1]], 'labelled with the --tenant given to the proxy');
       assert.ok(!(proxy.out + proxy.err).includes('sk-ant-test-key'), 'the key is not in the proxy output');
     } finally {
-      assert.equal((await proxy.stop())?.code, 0, `proxy exit; stderr: ${proxy.err}`);
-      assert.equal((await dash.stop())?.code, 0);
+      assertStoppedCleanly(assert, await proxy.stop(), `proxy stderr: ${proxy.err}`);
+      assertStoppedCleanly(assert, await dash.stop());
       await new Promise((r) => { upstream.close(r); upstream.closeAllConnections?.(); });
     }
   });

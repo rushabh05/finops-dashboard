@@ -6,6 +6,16 @@ import { createApp } from '../src/server.js';
 import { FrameParser, OP, acceptKey, encodeFrame, encodeClose } from '../src/ws.js';
 import { HOUR } from '../src/util.js';
 
+/**
+ * Windows has no SIGTERM: child.kill() ends the process at once and its exit code is not 0, so "stops cleanly on SIGTERM" can only be asserted on POSIX.
+ * There the real exit code is checked; on Windows only that the process is gone.
+ */
+export const GRACEFUL_STOP = process.platform !== 'win32';
+export function assertStoppedCleanly(assert, r, detail = '') {
+  if (GRACEFUL_STOP) assert.equal(r?.code, 0, `exit: ${JSON.stringify(r)} ${detail}`);
+  else assert.ok(r, 'the process is gone');
+}
+
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export async function waitUntil(fn, { timeout = 8000, interval = 10, what = 'condition' } = {}) {

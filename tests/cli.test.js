@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { waitUntil } from './helpers.js';
+import { assertStoppedCleanly, waitUntil } from './helpers.js';
 
 /*
  * These run the REAL entry point (`node src/server.js`, what `npm start` runs) as a child process. Every other test imports createApp /
@@ -54,7 +54,7 @@ test('npm start (no DB_PATH): multi-database mode comes up, serves the switcher 
       assert.equal((await fetch(`${url}/d/finops/api/stats`)).status, 200);
     } finally {
       const r = await run.stop();
-      assert.equal(r?.code, 0, `exit: ${JSON.stringify(r)} stderr: ${run.err}`);
+      assertStoppedCleanly(assert, r, `stderr: ${run.err}`);
     }
   });
 });
@@ -72,7 +72,7 @@ test('DB_PATH set: exactly that database at the root, no switcher (the original 
       assert.match(await (await fetch(`${url}/`)).text(), /<title>FinOps Dashboard<\/title>/);
       assert.equal((await fetch(`${url}/api/stats`)).status, 200);
     } finally {
-      assert.equal((await run.stop())?.code, 0);
+      assertStoppedCleanly(assert, await run.stop());
     }
   });
 });
@@ -86,7 +86,7 @@ test('AUTH_TOKEN through the entry point: announced, enforced on every source', 
       assert.equal((await fetch(`${url}/d/finops/api/summary`)).status, 401);
       assert.equal((await fetch(`${url}/d/finops/api/summary`, { headers: { Authorization: 'Bearer cli-token-0123456789abcdef' } })).status, 200);
     } finally {
-      assert.equal((await run.stop())?.code, 0);
+      assertStoppedCleanly(assert, await run.stop());
     }
   });
 });
