@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { loadConfig } from './config.js';
 import { createWorkspace } from './app.js';
+import { parseWebhookUrl } from './notify.js';
 import { HttpError, OriginPolicy, Auth, authGate, listenGuard } from './security.js';
 
 /*
@@ -72,6 +73,7 @@ export function discoverSources(dataDir) {
 export async function createMultiApp(overrides = {}, env = process.env) {
   const cfg = loadConfig(env, overrides);
   const auth = new Auth(cfg.authToken); // validated before anything is opened
+  if (cfg.alertWebhookUrl) parseWebhookUrl(cfg.alertWebhookUrl, cfg.alertWebhookFormat); // so is the webhook URL: fail at startup, not at the first alert
   let port = cfg.port;
   const policy = new OriginPolicy(cfg, () => port);
 
@@ -174,7 +176,7 @@ export async function createMultiApp(overrides = {}, env = process.env) {
     async close() {
       if (closed) return;
       closed = true;
-      for (const p of workspaces.values()) { try { (await p).close(); } catch { /* it never opened */ } }
+      for (const p of workspaces.values()) { try { const w = await p; await w.flush(); w.close(); } catch { /* it never opened */ } }
       await new Promise((r) => { server.close(() => r()); server.closeAllConnections?.(); });
     },
   };

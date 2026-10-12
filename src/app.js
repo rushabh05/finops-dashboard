@@ -1,11 +1,12 @@
 import http from 'node:http';
 import { readFileSync, readdirSync } from 'node:fs';
-import { extname, join } from 'node:path';
+import { basename, extname, join } from 'node:path';
 import { loadConfig } from './config.js';
 import { openDb, transaction, ChangeLog, getMeta, setMeta } from './db.js';
 import { PriceBook, seedPrices } from './pricing.js';
 import { Ingestor, ValidationError, verifyRollups, RE_TENANT, RE_ENDPOINT } from './ingest.js';
 import { Detector } from './detector.js';
+import { Notifier, parseWebhookUrl } from './notify.js';
 import { ANOMALY_KINDS, Simulator, seedHistory } from './sim.js';
 import { ChangeFeed } from './feed.js';
 import { Hub } from './hub.js';
@@ -26,6 +27,7 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 export async function createWorkspace(overrides = {}, env = process.env, ctx = {}) {
   const cfg = loadConfig(env, overrides);
   const auth = new Auth(cfg.authToken); // validated before anything is opened: a too-short token throws here
+  if (cfg.alertWebhookUrl) parseWebhookUrl(cfg.alertWebhookUrl, cfg.alertWebhookFormat); // ...and so is a bad webhook URL
   const startedAt = Date.now();
   const log = cfg.log ?? (() => {});
 
@@ -56,6 +58,12 @@ export async function createWorkspace(overrides = {}, env = process.env, ctx = {
   const feed = new ChangeFeed(db, { windowHours: cfg.liveWindowHours });
   const hub = new Hub({ feed, cfg });
   const detector = new Detector(db, cfg.detector);
+  // Alerts the simulator provokes are fake by design: they never reach a real channel unless asked (ALERT_WEBHOOK_SIMULATED=1, to try the setup out).
+  // "Simulated" is decided at run time: a database is simulated if it is set up to simulate OR the simulator has written to it (also when started later through /api/sim).
+  const notifier = cfg.alertWebhookUrl ? new Notifier({ url: cfg.alertWebhookUrl, format: cfg.alertWebhookFormat, source: basename(cfg.dbPath).replace(/\.db$/, ''), log: (m) => console.error(`[finops] ${m}`) }) : null;
+  let simWrote = false;
+  const isSimulated = () => simWrote || (cfg.simAutoStart && !dataSource);
+  const notifies = () => !!notifier && (cfg.alertWebhookSimulated || !isSimulated());
   const sim = new Simulator({ ingestor, seed: cfg.seed, volumeScale: cfg.volumeScale, rate: cfg.simRate, startTs: simStart, autoAnomalies: cfg.simAnomalies, maxBatch: cfg.limits.maxBatch });
 
   let port = cfg.port;
@@ -72,7 +80,7 @@ export async function createWorkspace(overrides = {}, env = process.env, ctx = {
     const t0 = Date.now();
     const r = detector.run();
     Object.assign(lastRun, { at: Date.now(), hour: r.hour, evaluated: r.evaluated, inserted: r.inserted.length, suppressed: r.suppressed, ms: Date.now() - t0, skipped: r.skipped ?? null });
-    if (r.inserted.length) feed.notify();
+    if (r.inserted.length) { feed.notify(); if (notifies()) notifier.notify(r.inserted); }
     return r;
   }
   function scheduleDetect() {
@@ -87,6 +95,7 @@ export async function createWorkspace(overrides = {}, env = process.env, ctx = {
   }
   function afterWrite() { feed.notify(); scheduleDetect(); }
   sim.on('write', afterWrite);
+  sim.on('write', () => { simWrote = true; });
   sim.on('error', (e) => console.error('simulator write failed:', e.message));
 
   const pruneTimer = setInterval(() => { try { changeLog.prune(cfg.changeLogKeep); } catch (e) { console.error('prune failed', e); } }, 30_000);
@@ -153,6 +162,7 @@ export async function createWorkspace(overrides = {}, env = process.env, ctx = {
         db: { ...counts, change_log: { head: changeLog.head(), retained: changeLog.count(), pruned_to: changeLog.prunedTo() } },
         feed: { head: feed.head, ...feed.stats, window_hours: feed.windowHours },
         detector: lastRun,
+        webhook: notifier ? { enabled: notifies(), host: notifier.host, format: notifier.format, ...notifier.stats, ...(notifies() ? {} : { reason: 'this database is simulated data' }) } : null,
         ...hub.stats(q.cid),
         llm: { anthropic_enabled: !!cfg.anthropicKey, model: cfg.anthropicKey ? cfg.anthropicModel : null, default_source: cfg.anthropicKey ? 'anthropic' : 'mock' },
       };
@@ -352,6 +362,8 @@ export async function createWorkspace(overrides = {}, env = process.env, ctx = {
   return {
     cfg, db, hub, feed, sim, detector, ingestor, priceBook, changeLog, policy, dataSource,
     runDetector, afterWrite, handle, handleUpgrade, startSim,
+    /** Wait (briefly) for queued alert notifications: called before shutdown so the last alert is not lost. */
+    flush: () => (notifier ? notifier.idle(1500) : Promise.resolve()),
     setPort(p) { port = p; },
     /** Stop everything this workspace started and close its database (not the HTTP server: the owner closes that). */
     close() {
@@ -396,6 +408,7 @@ export async function createApp(overrides = {}, env = process.env) {
     async close() {
       if (closed) return;
       closed = true;
+      await ws.flush();
       ws.close();
       await new Promise((r) => { server.close(() => r()); server.closeAllConnections?.(); });
     },

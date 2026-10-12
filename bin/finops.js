@@ -5,6 +5,7 @@
 //   finops import claude-code [importer options]     your own Claude Code usage  -> <data dir>/claude-code.db
 //   finops import trace <trace.csv> [importer options]   a public trace (BurstGPT, Azure LLM inference)
 //   finops check-llm                                  live check of ANTHROPIC_API_KEY against the real API
+//   finops check-webhook                              send a test message to ALERT_WEBHOOK_URL
 //
 // It adds nothing to the application: every command runs the same entry point `npm start` / `npm run import:*` runs, as a child process
 // (they need `--disable-warning=ExperimentalWarning`, which a shebang cannot carry). What it does add is a data directory that survives
@@ -33,6 +34,8 @@ usage:
         import a public LLM traffic trace.
   finops check-llm
         send one tiny request with ANTHROPIC_API_KEY to confirm explanations can use the real API.
+  finops check-webhook
+        send one test message to ALERT_WEBHOOK_URL (Slack, Discord or JSON) to confirm alert notifications are set up.
   finops --version | --help
 
 options for every command:
@@ -130,6 +133,7 @@ switch (cmd) {
   case 'start': code = await start(rest); break;
   case 'import': code = await importCmd(rest); break;
   case 'check-llm': code = await run('scripts/check-anthropic.js', rest); break;
+  case 'check-webhook': code = await run('scripts/check-webhook.js', rest); break;
   default: fail(`unknown command "${cmd}"\n\n${HELP}`);
 }
 process.exit(code);

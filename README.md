@@ -47,7 +47,7 @@ Requires **Node >= 22.13** (`node:sqlite` without a flag). No `npm install` is n
 ```
 git clone https://github.com/rushabh05/finops-dashboard.git && cd finops-dashboard
 npm start                    # http://127.0.0.1:8787  (first run seeds 30 days of simulated history in ~3 s)
-npm test                     # 152 tests, ~20 s
+npm test                     # 164 tests, ~30 s
 ```
 
 Open the page and wait a few seconds: the simulator writes live traffic and plants three anomalies (a tenant cost spike, prompt bloat,
@@ -80,6 +80,7 @@ finops start --open                                     # the sample + everythin
 | `finops import claude-code [--days N] [--replace] ...` | your own Claude Code usage (metadata only, never message text); every option of `npm run import:claude-code` works |
 | `finops import trace <file.csv> [--format ...] ...` | a public trace (BurstGPT, Azure LLM inference); every option of `npm run import:trace` works |
 | `finops check-llm` | one tiny request with `ANTHROPIC_API_KEY`, to confirm explanations can use the real API |
+| `finops check-webhook` | one test message to `ALERT_WEBHOOK_URL`, to confirm [alert notifications](#alert-notifications) are set up |
 | `finops --version`, `finops --help` | |
 
 **Where the data lives.** `finops` keeps databases in `--data-dir`, else `$DATA_DIR`, else **`~/.finops-dashboard`** (created owner-only, mode 700, because it holds your
@@ -125,6 +126,7 @@ src/
   transport.js   byte sinks + slow-link simulator hub.js        channel registry, fan-out, throttle, stats
   ws.js          RFC 6455 handshake + frames      queries.js    REST queries, CSV export
   security.js    allowlists, body caps, origin    server.js     routes, SSE + WS endpoints, app wiring
+  notify.js      alert webhooks (Slack/Discord/JSON)
   multi.js       multi-database front door: discovers data/*.db, routes /d/<id>/..., the source switcher's list
 bin/finops.js    the `finops` command (start, import, check-llm): a front door over server.js and scripts/
   import/        claude-code.js (transcripts -> requests), traces.js (BurstGPT / Azure CSV -> requests),
@@ -472,14 +474,40 @@ a trusted network use HTTPS and prefer the Bearer header. There is a single shar
 | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_EFFORT`, `ANTHROPIC_MAX_TOKENS` | -, `claude-sonnet-5-5`, api.anthropic.com, `low`, `1500` | effort `''` omits `output_config`; max tokens includes thinking tokens |
 | `ALLOWED_ORIGINS`, `ALLOWED_HOSTS`, `STRICT_ORIGIN` | -, -, off | comma-separated lists |
 | `AUTH_TOKEN`, `COOKIE_SECURE`, `ALLOW_INSECURE` | -, off, off | shared-secret auth (>= 16 chars); `Secure` cookie flag; allow a non-loopback `HOST` without a token |
+| `ALERT_WEBHOOK_URL`, `ALERT_WEBHOOK_FORMAT`, `ALERT_WEBHOOK_SIMULATED` | -, `auto`, off | post each new alert to Slack / Discord / any JSON endpoint: see [Alert notifications](#alert-notifications) |
 | `LIVE_WINDOW_HOURS`, `CHANGE_LOG_KEEP` | `6`, `50000` | rows kept in sync / change-log retention |
 
 Channel limits (`bufferLimit`, `drainMark`, `maxPending`, `maxRowsPerFrame`, `highWater`, `lowWater`, `maxTokenFrame`, `rowShare`,
 `stallMs`) live in `src/config.js`; detector thresholds in `DETECTOR_DEFAULTS` (`src/detector.js`).
 
+### Alert notifications
+
+An alert that only appears if somebody is looking at the page is easy to miss. Set a webhook and every **new** alert is posted to it:
+
+```
+ALERT_WEBHOOK_URL=https://hooks.slack.com/services/T000/B000/XXXX finops check-webhook   # one test message, to see it work
+ALERT_WEBHOOK_URL=https://hooks.slack.com/services/T000/B000/XXXX finops start           # then every new alert is posted
+```
+
+The message reads like the dashboard: `CRITICAL: Cost spike, tenant globex · all endpoints`, the numbers (`$6.54 vs typical $1.42 (4.6x)`), the explanation and the name of the
+database it came from. The format follows the host (`hooks.slack.com` is Slack, `discord.com/api/webhooks/...` is Discord); anything else receives JSON
+(`{"event": "finops.alert", "text": ..., "alert": {kind, severity, tenant, endpoint, observed, baseline, score, hour, explanation}}`, which Mattermost, ntfy-style relays and your own code can use).
+Force one with `ALERT_WEBHOOK_FORMAT=slack|discord|json`.
+
+What it will and will not do, on purpose:
+- **Simulated alerts never notify.** The sample data plants fake anomalies; they must not land in a real channel. A database counts as simulated if it is set up to simulate *or* the simulator has
+  written to it (also when started later from the page). `ALERT_WEBHOOK_SIMULATED=1` lifts that, to try your setup out on the sample. Imported databases never run live detection, so they do not notify either:
+  notifications are for databases that receive live traffic (`POST /api/ingest`, or `finops proxy`).
+- **The URL is a secret** (a Slack webhook URL is a password): it is never logged (only the host is) and never shown by `/api/stats`; plain `http://` is refused unless it points at this machine;
+  a bad URL stops startup instead of failing at the first alert; redirects are **not followed**.
+- **Only what the dashboard already shows is sent**: kind, severity, tenant, endpoint, the numbers and the explanation. Never request ids, rows or prompts.
+- **It cannot hurt detection**: delivery is asynchronous, one message at a time, with a 5 s timeout and one retry (network error, 429, 5xx). A flood is bounded: past 100 queued messages the oldest are dropped and a
+  single "N more alerts were not sent" message says so. `/api/stats` has a `webhook` block (`sent`, `failed`, `dropped`).
+- **Cooldown still applies**: a repeat inside the detector's cooldown is not a new alert, so it is not posted again.
+
 ## Tests
 
-`npm test` runs 152 `node:test` tests (about 20 s, run serially):
+`npm test` runs 164 `node:test` tests (about 20-30 s, run serially):
 
 * **pricing**: cached tokens and cache writes (5-minute / 1-hour), rounding, `effective_from`, a `BigInt` reference on 5,000 random inputs each with and without writes;
 * **ingest**: validation (every field), batch cap, idempotency, atomic rollback, **rollups vs brute-force recomputation** after randomised
@@ -507,6 +535,10 @@ Channel limits (`bufferLimit`, `drainMark`, `maxPending`, `maxRowsPerFrame`, `hi
   isolation between sources (data, tags, simulator refused on imports), static assets and SSE/WebSocket under `/d/<id>/`, unknown or traversal-style paths, Origin/Host under the prefix, writes landing in the
   right database, the sample simulator pausing when nobody watches and honouring a manual pause, `DEFAULT_SOURCE`, authentication at the front door (the cookie flow keeps the prefix), the non-loopback guard, and
   closing every workspace; plus a **static check that every URL the page uses is relative** (what makes `/d/<id>/` work) and a WebSocket test that the server answers a client close with exactly one close frame;
+* **alert notifications** (`notify.test.js`, against a local webhook server): the URL rules (https only, plain http for this machine, errors that never contain the URL), the three payload formats and each kind's units,
+  ordered one-at-a-time delivery, one retry after a 5xx and none after a 4xx, redirects not followed, a timeout, a closed port, the bounded queue with its single summary message, `sendTest`, and the wiring: a live database posts each
+  new alert and only new ones, `/api/stats` never exposes the URL, **simulated data never notifies** (configured to simulate, or simulated later through `/api/sim`) unless opted in, a bad URL stops startup, and the real detector's
+  prompt-bloat alert reaches the webhook end to end. (Checked by mutation: simulated alerts leaking, redirects followed, the URL in a log line, no retry and http for any host each fail a test.)
 * **the `finops` command** (`finops-bin.test.js`): help/version and every way to get a command wrong (exit status 2, the message); `finops start --data-dir` creates the directory owner-only, serves multi-database mode
   and passes SIGTERM on to the server (exit 0); an import made with `finops import claude-code` lands in the data directory, prints a hint that names `finops` rather than npm, and is served by `finops start` with the numbers of the
   fixture; `--db FILE` gives exactly that database with no switcher. (Checked by mutation: no data-dir, a world-readable directory, a swallowed SIGTERM and a missing hint each fail a test.)

@@ -26,6 +26,10 @@ export function loadConfig(env = process.env, overrides = {}) {
     allowInsecure: env.ALLOW_INSECURE === '1', // allow a non-loopback HOST without AUTH_TOKEN (e.g. behind an authenticating proxy)
     cookieSecure: env.COOKIE_SECURE === '1', //   add the Secure flag to the session cookie (serve over HTTPS)
 
+    alertWebhookUrl: env.ALERT_WEBHOOK_URL || '', //    post each NEW alert here (Slack, Discord or any JSON endpoint); the URL is a secret
+    alertWebhookFormat: env.ALERT_WEBHOOK_FORMAT || 'auto', // auto | slack | discord | json
+    alertWebhookSimulated: env.ALERT_WEBHOOK_SIMULATED === '1', // simulated data never notifies, unless you are trying the setup out
+
     anthropicKey: env.ANTHROPIC_API_KEY || '',
     anthropicModel: env.ANTHROPIC_MODEL || 'claude-sonnet-5-5',
     anthropicEffort: env.ANTHROPIC_EFFORT === undefined ? 'low' : env.ANTHROPIC_EFFORT, // '' omits output_config.effort

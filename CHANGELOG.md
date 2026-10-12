@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+* **Alert notifications.** `ALERT_WEBHOOK_URL` posts every new alert to Slack, Discord or any JSON endpoint (`src/notify.js`); `finops check-webhook` sends a test message. Simulated alerts never notify
+  (decided at run time: configured to simulate, or the simulator has written to the database) unless `ALERT_WEBHOOK_SIMULATED=1`. The URL is treated as a secret (never logged, never in `/api/stats`, https required except for
+  localhost, redirects not followed), delivery is asynchronous with a timeout, one retry and a bounded queue. `/api/stats` gains a `webhook` block. 12 new tests (`tests/notify.test.js`), checked by mutation.
 * **The `finops` command** (`bin/finops.js`): `finops start [--open]`, `finops import claude-code`, `finops import trace`, `finops check-llm`. Runs from a clone, installed
   (`npm install -g github:rushabh05/finops-dashboard`) or with no install (`npx github:rushabh05/finops-dashboard start --open`). It keeps databases in `--data-dir`, else `$DATA_DIR`, else
   `~/.finops-dashboard` (mode 700) so imports survive an npx cache; `npm start` is unchanged. The importers now honour `DATA_DIR` too, and print hints that match how they were launched.
