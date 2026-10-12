@@ -1,0 +1,6 @@
+data/*.db
+data/*.db-*
+node_modules/
+data/datasets/
+.DS_Store
+*.log

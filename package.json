@@ -1,0 +1,44 @@
+{
+  "name": "finops-dashboard",
+  "version": "1.0.0",
+  "description": "Real-time FinOps dashboard: LLM + infrastructure cost per tenant/endpoint/call, live streaming with backpressure, LLM-written anomaly explanations, importers for Claude Code usage and public traces. Zero npm dependencies.",
+  "license": "MIT",
+  "author": "Rushabh Yeole (https://github.com/rushabh05)",
+  "homepage": "https://github.com/rushabh05/finops-dashboard#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rushabh05/finops-dashboard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/rushabh05/finops-dashboard/issues"
+  },
+  "keywords": [
+    "finops",
+    "llm",
+    "cost",
+    "dashboard",
+    "anthropic",
+    "claude",
+    "observability",
+    "sse",
+    "websocket",
+    "sqlite",
+    "zero-dependency"
+  ],
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/server.js",
+    "test": "node --disable-warning=ExperimentalWarning --test --test-concurrency=1 \"tests/*.test.js\"",
+    "seed": "node --disable-warning=ExperimentalWarning scripts/seed.js",
+    "eval:detector": "node --disable-warning=ExperimentalWarning scripts/eval-detector.js",
+    "smoke:ui": "node --disable-warning=ExperimentalWarning scripts/ui-smoke.mjs",
+    "import:claude-code": "node --disable-warning=ExperimentalWarning scripts/import-claude-code.js",
+    "import:trace": "node --disable-warning=ExperimentalWarning scripts/import-trace.js",
+    "check:llm": "node --disable-warning=ExperimentalWarning scripts/check-anthropic.js",
+    "eval:real": "node --disable-warning=ExperimentalWarning scripts/eval-detector-real.js"
+  }
+}

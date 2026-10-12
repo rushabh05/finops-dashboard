@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FinOps Dashboard</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%232a78d6'/%3E%3Crect x='3' y='8' width='2.5' height='5' fill='white'/%3E%3Crect x='6.7' y='5' width='2.5' height='8' fill='white'/%3E%3Crect x='10.5' y='3' width='2.5' height='10' fill='white'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1>FinOps</h1>
+    <label class="sr-only" for="source">Data source</label>
+    <select id="source" title="Data source: sample data or an imported database" hidden></select>
+    <span class="sub" id="datatime">Loading…</span>
+    <span class="spacer"></span>
+    <div class="conn" id="conn" role="status" data-state="connecting"><span class="dot" aria-hidden="true"></span><span id="conntext">Connecting…</span></div>
+    <label class="sr-only" for="transport">Live transport</label>
+    <select id="transport" title="Live transport">
+      <option value="sse">SSE</option>
+      <option value="ws">WebSocket</option>
+    </select>
+    <div class="seg" id="range" role="group" aria-label="Time range">
+      <button type="button" data-range="24h">24h</button>
+      <button type="button" data-range="7d">7d</button>
+      <button type="button" data-range="30d">30d</button>
+    </div>
+    <button type="button" class="btn" id="patterns" aria-pressed="false" title="Add texture to chart fills so series do not rely on colour">Patterns</button>
+    <button type="button" class="btn" id="theme" title="Colour theme">Theme: auto</button>
+  </header>
+
+  <div class="banner" id="source-banner" role="note" hidden></div>
+
+  <div class="filters" id="filters" aria-label="Active filters"></div>
+
+  <section class="tiles" id="tiles" aria-label="Key figures"></section>
+
+  <div class="grid two">
+    <div class="col">
+    <section class="card mb" id="chartcard" aria-labelledby="chart-title">
+      <header>
+        <h2 id="chart-title">Spend over time</h2>
+        <span class="hint" id="chart-hint"></span>
+        <span class="spacer"></span>
+        <label class="sr-only" for="stackby">Stack by</label>
+        <select id="stackby">
+          <option value="tenant">Stack by tenant</option>
+          <option value="endpoint">Stack by endpoint</option>
+          <option value="model">Stack by model</option>
+        </select>
+        <div class="seg" id="viewtoggle" role="group" aria-label="Chart or table view">
+          <button type="button" data-view="chart" aria-pressed="true">Chart</button>
+          <button type="button" data-view="table" aria-pressed="false">Table</button>
+        </div>
+        <button type="button" class="btn small" data-export="timeseries">Export CSV</button>
+      </header>
+      <div id="chartbody"></div>
+    </section>
+    <section class="card" id="explaincard" aria-labelledby="explain-title">
+      <header>
+        <h2 id="explain-title">LLM explanation</h2>
+        <span class="spacer"></span>
+        <button type="button" class="btn small" id="cancelgen" hidden>Cancel</button>
+      </header>
+      <div class="hint" id="explain-for">Choose “Explain with LLM” on an alert.</div>
+      <div class="explain" id="explain" aria-live="off" tabindex="0" aria-label="Explanation text"></div>
+      <div class="explain-meta" id="explain-meta"></div>
+    </section>
+    </div>
+
+    <div>
+      <section class="card" id="alertscard" aria-labelledby="alerts-title">
+        <header>
+          <h2 id="alerts-title">Alerts</h2>
+          <span class="hint" id="alerts-hint"></span>
+          <span class="spacer"></span>
+          <div class="seg" id="alertfilter" role="group" aria-label="Alert filter">
+            <button type="button" data-af="active" aria-pressed="true">Active</button>
+            <button type="button" data-af="all" aria-pressed="false">All</button>
+          </div>
+          <button type="button" class="btn small" data-export="alerts">Export CSV</button>
+        </header>
+        <div class="scroll" id="alertlist" role="list" aria-live="polite"></div>
+      </section>
+    </div>
+  </div>
+
+  <div class="grid tables">
+    <section class="card" id="tenantcard" aria-labelledby="t-title"></section>
+    <section class="card" id="endpointcard" aria-labelledby="e-title"></section>
+    <section class="card" id="modelcard" aria-labelledby="m-title"></section>
+  </div>
+
+  <section class="card mb" id="drillcard" aria-labelledby="drill-title">
+    <header>
+      <h2 id="drill-title">Request drill-down</h2>
+      <span class="hint" id="drill-hint">Most expensive requests for the current filters. Select one to see each LLM call.</span>
+      <span class="spacer"></span>
+      <div class="seg" id="drillsort" role="group" aria-label="Sort requests">
+        <button type="button" data-sort="cost" aria-pressed="true">Most expensive</button>
+        <button type="button" data-sort="recent" aria-pressed="false">Most recent</button>
+      </div>
+      <button type="button" class="btn small" data-export="requests">Export CSV</button>
+    </header>
+    <div class="tablewrap scroll" id="reqlist"></div>
+    <div class="detail" id="reqdetail" hidden></div>
+  </section>
+
+  <section class="card mb" id="labcard" aria-labelledby="lab-title">
+    <header>
+      <h2 id="lab-title">Backpressure lab</h2>
+      <span class="hint">Slow the link, speed up the model, flood the write path - and watch the stream cope.</span>
+    </header>
+    <div class="lab" id="labctl"></div>
+    <div class="row-actions" id="labactions"></div>
+    <div class="counters" id="counters" aria-live="off"></div>
+    <div class="queue" id="queue"></div>
+  </section>
+
+  <footer id="foot"></footer>
+</div>
+<div class="toast" id="toast" role="status" hidden></div>
+</body>
+</html>
