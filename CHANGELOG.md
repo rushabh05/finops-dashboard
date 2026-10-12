@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 - 2026-10-13
 
 * **CI runs on Windows too** (`windows-latest`, Node 22.13.0 / 22.x / 24.x): the whole suite passes. The graceful-stop assertions are platform-aware (Windows has no SIGTERM). Found and fixed on the way: proxy tests leaked database handles (`EBUSY` on cleanup), a real-process test asserted on a stdout line the moment the line before it arrived, and the importer tests read process output on `exit` instead of `close`.
 * **`finops import anthropic-usage`**: your organization's token usage from Anthropic's Usage & Cost Admin API (needs an Admin API key; individual accounts have none), by workspace (or API key / account / service account) and model, priced at list prices,
@@ -21,11 +21,12 @@
   `package.json` gains `bin` and `files` (a 136 KB package: no media, databases or tests). New: `tests/finops-bin.test.js` (4 tests).
 * **Film: removed the oval.** The product film had a full-frame elliptical vignette, a blue halo behind the logo and an orange disc behind the cost spike; all three read as a big
   oval/circle on the background. The ground is now flat; the spike is picked out by a tight outline that hugs the tallest bar. Re-encoded (25 MB, was 37 MB).
-* Two flaky tests, found by CI on the previous commit. `cli.test.js` asserted a stdout line the moment the line before it arrived (the CI log shows the output holding only the first
-  line); it now waits for the line. The live-simulator e2e test timed out once on Linux / Node 22.13.0 and **could not be reproduced** (0 failures in 12 isolated and 6 full-suite runs
-  in a Node 22.13.0 container, nor under heavy CPU starvation). What was measured: its 3-hour anomaly window lasts only ~1.6 s of real time at 1500 req/s, and it only accepted the alert
-  in a `rows` frame. It now uses a 12-hour window at 300 req/s (about 30 s), waits for the alert in the database, then for the client to receive it in a `rows` or a `snapshot` frame, and
-  a failure prints the simulator state, the alerts table and the stream's event counts. Treat that fix as a likely cause, not a proven one.
+* Two flaky tests, found by CI on the film commit. `cli.test.js` asserted a stdout line the moment the line before it arrived (the CI log shows the output holding only the first line); it now waits for the line.
+  The live-simulator e2e test timed out once on Linux / Node 22.13.0. It did not reproduce in 12 isolated and 6 full-suite runs in a Node 22.13.0 container, nor at half a CPU; but under **extreme CPU starvation**
+  (a tenth of a CPU plus four busy loops) the old version failed with the same message in at least 2 runs (the run's summary was lost, so the total is unknown) while the new one passed 3 of 3. That is supportive, not
+  conclusive: at that setting everything is ~10x slower, so any wall-clock timeout can trip. What was measured about the old test: its 3-hour anomaly window lasts only ~1.6 s of real time at 1500 req/s, and it only
+  accepted the alert in a `rows` frame. The new one uses a 12-hour window at 300 req/s (about 30 s), waits for the alert in the database, then for the client to receive it in a `rows` or a `snapshot` frame, and a failure
+  prints the simulator state, the alerts table and the stream's event counts.
 
 ## 1.0.1 - 2026-10-12
 
