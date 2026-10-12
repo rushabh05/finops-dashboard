@@ -656,7 +656,7 @@ garbage-collected mid-iteration on Node 22.13 ("statement has been finalized"), 
 holds on macOS but not with Linux's larger socket buffers, so it now waits until production has stopped.
 The data source switcher was driven in headless Chrome (`scripts/ui-smoke-switcher.mjs`): `/` lands on the sample, each pick opens its own dashboard with its own data and banner, live over SSE and over WebSocket,
 Back and Forward return to the right source and are live again (that run found the stale dropdown after Back and a duplicate WebSocket close frame, both fixed), no horizontal scroll at 390 px, no console errors.
-`.github/workflows/test.yml` runs the suite on GitHub on {ubuntu-latest (x86_64), macos-latest (arm64)} x {22.13.0, 22.x, 24.x}. The first run failed one job (Node 24 on Linux x86_64):
+`.github/workflows/test.yml` runs the suite on GitHub on {ubuntu-latest (x86_64), macos-latest (arm64), windows-latest} x {22.13.0, 22.x, 24.x}, plus a `docker` job that builds the image and runs `scripts/docker-smoke.sh`. The first run failed one job (Node 24 on Linux x86_64):
 a channel test paced its source with a 5 ms timer, so a stalled event loop let two chunks merge, which is the channel's documented behaviour for a client that is not keeping up. The test now
 paces on the flush itself, and the full matrix then passed three times in a row.
 
@@ -685,7 +685,10 @@ cache-writes column, light/dark, 390 px, no console errors or CSP violations).
   `content_block_delta` / `text_delta`, `message_delta.stop_reason`, `error`, `message_stop`). That review is why `max_tokens` is now 1500 and an empty answer is an error: Sonnet 5.5 thinks by default and thinking
   tokens count against `max_tokens`. **`ANTHROPIC_API_KEY=... npm run check:llm` does the live check in a few seconds** (well under a cent): it reports time to first text and, if the API rejects
   `output_config.effort`, retries without it and tells you to set `ANTHROPIC_EFFORT=`. Until someone has run it, "works against the live API" is unproven.
-* Not tried: Windows (the Claude Code importer assumes POSIX paths), Safari and Firefox (the code uses only standard `EventSource`/`WebSocket`/`fetch`), Node 20 and older (`node:sqlite` is absent).
+* **Windows**: the whole suite passes on `windows-latest` on Node 22.13.0, 22.x and 24.x (the server, importers on synthetic data, the proxy, webhooks, the CLI). Adding it found one problem, in the tests, not the product: a database handle the proxy tests left open
+  made cleanup fail with `EBUSY` (Windows cannot delete an open file). Three things are *not* checked there, by nature: a graceful stop by signal (Windows has no SIGTERM, so those assertions only check that the process is gone), the data directory's mode 700 (a POSIX
+  concept), and the Claude Code importer on **real Windows history** (it assumes POSIX-style project paths; its fixtures are synthetic).
+* Not tried: Safari and Firefox (the code uses only standard `EventSource`/`WebSocket`/`fetch`; the browser checks above are Chrome only), Node 20 and older (`node:sqlite` is absent).
 * Behaviour behind a reverse proxy or on a real network link (buffering proxies, mobile networks); the slow link is simulated in-process and by a client that does not read.
 * Loopback socket buffers absorb several MB before backpressure is visible; the real-socket test therefore pushes ~24 MB and would need adjusting on a system with
   larger buffers.

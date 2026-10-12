@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+* **CI runs on Windows too** (`windows-latest`, Node 22.13.0 / 22.x / 24.x): the whole suite passes. The graceful-stop assertions are platform-aware (Windows has no SIGTERM). Found and fixed on the way: proxy tests leaked database handles (`EBUSY` on cleanup), a real-process test asserted on a stdout line the moment the line before it arrived, and the importer tests read process output on `exit` instead of `close`.
 * **`finops import anthropic-usage`**: your organization's token usage from Anthropic's Usage & Cost Admin API (needs an Admin API key; individual accounts have none), by workspace (or API key / account / service account) and model, priced at list prices,
   with a check against what Anthropic billed (cost report, cents) per model and tier. Aggregated data: one row per hour and group, not per API call, and labelled as such (no detection is run). A model and its dated alias are merged into one group
   (two rows with one id would have let ingest drop one silently: found by the unit test). **Tested against a fake Admin API that follows the documentation, not the real one.**
