@@ -23,6 +23,14 @@ and a built-in **data source switcher** moves between the simulated sample and a
 </tr>
 </table>
 
+### Watch the film
+
+<a href="docs/media/finops-promo.mp4"><img src="docs/media/finops-promo-poster.jpg" alt="FinOps: a 48-second film. Click to watch." width="720"></a>
+
+*Know where every dollar goes.* A 48-second film of the real dashboard (1080p, 60 fps, with sound): click the picture to play it in GitHub, or
+[download the mp4](docs/media/finops-promo.mp4) (37 MB). Everything on screen is the app's own UI running on its seeded **simulated** sample data (the film says so in a
+small caption), the explanation text is the built-in mock model, and the score is original. The film and its score are released under the same [MIT license](LICENSE) as the code.
+
 **Zero npm dependencies.** Node's built-in `node:http`, `node:sqlite`, `node:crypto`, `node:test`; the WebSocket handshake and framing are
 hand-written (`src/ws.js`). The client is one HTML page, vanilla JS modules and inline SVG, with light and dark themes, a colour-blind-safe
 palette and keyboard/screen-reader support.
@@ -91,6 +99,7 @@ src/
                  prices.js (real dated price lists), common.js (protected import DB, batch writer, detector backfill)
 public/          index.html, style.css, app.js, charts.js, stream.js, dom.js, format.js
 docs/images/     README screenshots (simulated and public data only)
+docs/media/      the product film (mp4) and its poster frame
 tests/           node:test suites (+ helpers.js: fake transport, SSE/WS clients, mirror of the browser state)
 scripts/         seed.js, eval-detector.js, eval-detector-real.js, import-claude-code.js, import-trace.js, check-anthropic.js,
                  ui-smoke.mjs, ui-smoke-imported.mjs, ui-smoke-switcher.mjs, screenshots.mjs
