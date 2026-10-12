@@ -51,6 +51,7 @@
     "import:claude-code": "node --disable-warning=ExperimentalWarning scripts/import-claude-code.js",
     "import:trace": "node --disable-warning=ExperimentalWarning scripts/import-trace.js",
     "check:llm": "node --disable-warning=ExperimentalWarning scripts/check-anthropic.js",
+    "proxy": "node --disable-warning=ExperimentalWarning scripts/proxy.js",
     "check:webhook": "node --disable-warning=ExperimentalWarning scripts/check-webhook.js",
     "eval:real": "node --disable-warning=ExperimentalWarning scripts/eval-detector-real.js"
   }

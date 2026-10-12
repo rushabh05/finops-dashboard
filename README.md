@@ -47,7 +47,7 @@ Requires **Node >= 22.13** (`node:sqlite` without a flag). No `npm install` is n
 ```
 git clone https://github.com/rushabh05/finops-dashboard.git && cd finops-dashboard
 npm start                    # http://127.0.0.1:8787  (first run seeds 30 days of simulated history in ~3 s)
-npm test                     # 164 tests, ~30 s
+npm test                     # 181 tests, ~30 s
 ```
 
 Open the page and wait a few seconds: the simulator writes live traffic and plants three anomalies (a tenant cost spike, prompt bloat,
@@ -79,6 +79,7 @@ finops start --open                                     # the sample + everythin
 | `finops start [--port N] [--host H] [--data-dir DIR] [--db FILE] [--open]` | serves every database in the data directory (or exactly `--db FILE`); `--open` opens the browser once the server is up |
 | `finops import claude-code [--days N] [--replace] ...` | your own Claude Code usage (metadata only, never message text); every option of `npm run import:claude-code` works |
 | `finops import trace <file.csv> [--format ...] ...` | a public trace (BurstGPT, Azure LLM inference); every option of `npm run import:trace` works |
+| `finops proxy [--port N] [--tenant NAME] [--source live] [--upstream URL] [--verbose]` | record your app's Anthropic API calls **live**: see [Live data](#live-data-finops-proxy) |
 | `finops check-llm` | one tiny request with `ANTHROPIC_API_KEY`, to confirm explanations can use the real API |
 | `finops check-webhook` | one test message to `ALERT_WEBHOOK_URL`, to confirm [alert notifications](#alert-notifications) are set up |
 | `finops --version`, `finops --help` | |
@@ -88,6 +89,43 @@ usage data). That default is deliberate: run through `npx`, the package sits in 
 lose your imports. `npm start` and `npm run import:*` are unchanged and still use `data/` in the clone; both now also honour `DATA_DIR`. Everything else (`PORT`, `HOST`,
 `AUTH_TOKEN`, `ANTHROPIC_API_KEY`, ...) is read from the environment exactly as in [Configuration](#configuration). There is deliberately no `--token` flag: a secret on the command line is
 visible to every user of the machine in `ps`.
+
+### Live data: `finops proxy`
+
+The importers show history. To watch what your own app spends **as it spends it**, send its Anthropic calls through the proxy: nothing to change in the app but a base URL.
+
+```
+finops start                                         # terminal 1: the dashboard
+finops proxy --tenant checkout                       # terminal 2: records into a database called "live"
+ANTHROPIC_BASE_URL=http://127.0.0.1:8788 python app.py   # terminal 3: any app whose Anthropic SDK honours ANTHROPIC_BASE_URL
+```
+
+Open the **Data source** menu: `live` is there, filling up as calls happen, with the same tiles, tenant/endpoint tables, request drill-down and anomaly alerts as everything else
+(and, with `ALERT_WEBHOOK_URL` set, a Slack message when one fires: [Alert notifications](#alert-notifications)). Label calls per customer or feature with two request headers, which the proxy
+strips before forwarding: `x-finops-tenant: acme`, `x-finops-endpoint: /summarize` (otherwise: `--tenant`, and the path `/v1/messages`).
+
+```
+app --> proxy (127.0.0.1:8788) --> api.anthropic.com        the proxy forwards to ONE configured upstream, streaming included
+             |
+             +--> POST /api/ingest on the dashboard         tenant, endpoint, time, status, duration, model, token counts: nothing else
+```
+
+- **It sees your API key in transit and never keeps it.** Neither keys nor prompts, answers or headers are stored or logged (a test greps the database files, the proxy's log and its health endpoint for them).
+  What reaches the dashboard is the `usage` block of each response. It listens on `127.0.0.1` only (run one beside each service rather than exposing it), forwards to the fixed `--upstream`
+  (a request path such as `//evil.example/x` or an absolute-form request line cannot pick another host), and refuses to record into the simulated sample database.
+- **Same numbers as the importer.** Cached and cache-write tokens are mapped by the very function `finops import claude-code` uses, so imported and proxied usage of the same call cannot disagree
+  (`input_tokens` is the whole prompt: uncached + cache read + cache writes). Streams are read as they pass (the final `output_tokens` wins); compressed responses are forwarded as they are and read as well.
+- **Failures count.** A 429 or 5xx is recorded as a request with that status and no cost (retry storms are what that detector is made of); a stream that ends in an `overloaded_error` is a 529. If your
+  app gives up mid-stream, the call is recorded as **499** with the usage already reported (the prompt was processed, so its input tokens are real; output tokens are then a lower bound).
+- **Prices.** A new `live` database gets the real dated price list (`src/import/prices.js`). A model with no price is rejected by the dashboard, **named in the proxy's log, counted** (`/__finops/health`),
+  and does not take the other calls in its batch down with it. Dated aliases (`claude-sonnet-5-5-20260101`) are recorded under the priced name.
+- **The dashboard being down is not your app's problem.** Calls keep working; up to 1000 records queue and are sent when it returns. Dashboard with `AUTH_TOKEN`: set the same `AUTH_TOKEN` in the proxy's
+  environment (sent as a Bearer header; never a command-line flag).
+- **Anthropic Messages API only** (`POST /v1/messages`, streamed or not). Other paths are forwarded but not recorded. OpenAI-style APIs are **not** recorded: this project has no verified price list for
+  them, and a cost computed from a guessed price is worse than none.
+
+**Verified against a fake Anthropic API and a real dashboard, not yet against api.anthropic.com** (no API key was available while this was built). The shapes it reads (`message_start` /
+`message_delta` usage, the `cache_creation` breakdown, `error` events) follow Anthropic's documented streaming format and the usage records the importer already reads; a run with a real key is the one remaining check.
 
 ### Data sources and the switcher
 
@@ -126,7 +164,7 @@ src/
   transport.js   byte sinks + slow-link simulator hub.js        channel registry, fan-out, throttle, stats
   ws.js          RFC 6455 handshake + frames      queries.js    REST queries, CSV export
   security.js    allowlists, body caps, origin    server.js     routes, SSE + WS endpoints, app wiring
-  notify.js      alert webhooks (Slack/Discord/JSON)
+  notify.js      alert webhooks (Slack/Discord/JSON)   proxy.js      `finops proxy`: record live Anthropic calls
   multi.js       multi-database front door: discovers data/*.db, routes /d/<id>/..., the source switcher's list
 bin/finops.js    the `finops` command (start, import, check-llm): a front door over server.js and scripts/
   import/        claude-code.js (transcripts -> requests), traces.js (BurstGPT / Azure CSV -> requests),
@@ -507,7 +545,7 @@ What it will and will not do, on purpose:
 
 ## Tests
 
-`npm test` runs 164 `node:test` tests (about 20-30 s, run serially):
+`npm test` runs 181 `node:test` tests (about 20-30 s, run serially):
 
 * **pricing**: cached tokens and cache writes (5-minute / 1-hour), rounding, `effective_from`, a `BigInt` reference on 5,000 random inputs each with and without writes;
 * **ingest**: validation (every field), batch cap, idempotency, atomic rollback, **rollups vs brute-force recomputation** after randomised
@@ -535,6 +573,12 @@ What it will and will not do, on purpose:
   isolation between sources (data, tags, simulator refused on imports), static assets and SSE/WebSocket under `/d/<id>/`, unknown or traversal-style paths, Origin/Host under the prefix, writes landing in the
   right database, the sample simulator pausing when nobody watches and honouring a manual pause, `DEFAULT_SOURCE`, authentication at the front door (the cookie flow keeps the prefix), the non-loopback guard, and
   closing every workspace; plus a **static check that every URL the page uses is relative** (what makes `/d/<id>/` work) and a WebSocket test that the server answers a client close with exactly one close frame;
+* **the proxy** (`proxy.test.js`, a fake Anthropic upstream and a REAL dashboard): a non-streamed call and a streamed one split at 7-byte boundaries (mid-line, mid-JSON, mid-character) pass through byte for byte and are
+  recorded with the exact cost; compressed responses; 429s and mid-stream errors recorded as failures; a client that gives up mid-stream (499 with the usage seen); dated model aliases; an unpriced model rejected
+  without losing its batch-mates, and named; label headers (stripped before forwarding, invalid ones ignored and logged once); other paths not recorded; **a request path can never pick another host**; **no key or prompt in the
+  database files, the log or the health endpoint**; the dashboard down (queued, then delivered), `AUTH_TOKEN`, single-database mode; the guards (sample database, non-loopback, http, credentials, a loop); and that the usage mapping is the
+  importer's. (Checked by mutation: a vulnerable URL construction, a key in the log, the sample database allowed, lost partial usage, forwarded labels, first-usage-wins, a batch lost to one bad record, a non-loopback listen
+  and a database without prices each fail a test.) `finops-bin.test.js` also runs `finops start` + `finops proxy` as real processes and checks a call's tokens and cost in the dashboard.
 * **alert notifications** (`notify.test.js`, against a local webhook server): the URL rules (https only, plain http for this machine, errors that never contain the URL), the three payload formats and each kind's units,
   ordered one-at-a-time delivery, one retry after a 5xx and none after a 4xx, redirects not followed, a timeout, a closed port, the bounded queue with its single summary message, `sendTest`, and the wiring: a live database posts each
   new alert and only new ones, `/api/stats` never exposes the URL, **simulated data never notifies** (configured to simulate, or simulated later through `/api/sim`) unless opted in, a bad URL stops startup, and the real detector's
@@ -573,6 +617,7 @@ cache-writes column, light/dark, 390 px, no console errors or CSP violations).
 
 **Not verified**
 
+* `finops proxy` has never talked to the real api.anthropic.com (see [Live data](#live-data-finops-proxy)); only a fake of it.
 * The Claude Code importer assumes the transcript layout of the Claude Code version on this machine (message ids, `cost-state` entries, `agentId`, `attributionAgent`, `cache_creation`
   breakdown). Other versions may differ: unknown shapes are skipped, never guessed. Only macOS paths were tried.
 * Prices: `opus-5`, `haiku-4-5` and `haiku-5-5` are not cross-checked against Claude Code's own cost; GPT prices for BurstGPT are assumptions about mid-2023 list prices; Azure traces are priced as whatever

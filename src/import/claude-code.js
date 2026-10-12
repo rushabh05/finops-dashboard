@@ -188,7 +188,7 @@ export async function scanTranscripts({ root = DEFAULT_ROOT, files = findTranscr
   return { messages, errors, costStates, cwdCounts, stats };
 }
 
-function usageFields(u) {
+export function usageFields(u) {
   const cc = u.cache_creation || {};
   let w5 = int(cc.ephemeral_5m_input_tokens);
   const w1 = int(cc.ephemeral_1h_input_tokens);

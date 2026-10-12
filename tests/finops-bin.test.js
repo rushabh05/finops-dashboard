@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import http from 'node:http';
+import net from 'node:net';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -140,6 +142,76 @@ test('finops start --db FILE: exactly that database at the root, no source switc
       assert.equal((await fetch(`${url}/api/stats`)).status, 200);
     } finally {
       assert.equal((await run.stop())?.code, 0);
+    }
+  });
+});
+
+const freePort = () => new Promise((resolve) => { const srv = net.createServer().listen(0, '127.0.0.1', () => { const p = srv.address().port; srv.close(() => resolve(p)); }); });
+
+function spawnCli(args, env = {}) {
+  const child = spawn(process.execPath, [BIN, ...args], { cwd: ROOT, env: { ...process.env, ...CLEAN, ...QUIET, ...env }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+  const run = { child, out: '', err: '' };
+  child.stdout.on('data', (d) => { run.out += d; });
+  child.stderr.on('data', (d) => { run.err += d; });
+  run.exited = new Promise((r) => child.on('exit', (code, signal) => r({ code, signal })));
+  run.stop = async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+    const r = await Promise.race([run.exited, new Promise((r2) => setTimeout(() => r2(null), 8000))]);
+    try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ }
+    if (!r) await run.exited;
+    return r;
+  };
+  return run;
+}
+
+test('finops proxy: refuses the simulated sample database, rejects unknown options, and --help names the command', async () => {
+  await withDir(async (dir) => {
+    const sample = finops(['proxy', '--source', 'finops', '--data-dir', join(dir, 'd')]);
+    assert.equal(sample.status, 2);
+    assert.match(sample.stderr, /simulated sample database/);
+    assert.match(finops(['proxy', '--help']).stdout, /usage: finops proxy/);
+    assert.match(finops(['proxy', '--bogus']).stderr, /Unknown option/);
+    assert.match(finops(['help']).stdout, /finops proxy/);
+  });
+});
+
+test('finops proxy + finops start, as real processes: a call made through the proxy shows up in the dashboard with the right tokens and cost', async () => {
+  await withDir(async (dir) => {
+    const data = join(dir, 'data');
+    const reply = JSON.stringify({ id: 'msg_1', type: 'message', model: 'claude-sonnet-5-5', content: [{ type: 'text', text: 'SECRET answer' }], usage: { input_tokens: 1000, cache_read_input_tokens: 500, cache_creation_input_tokens: 200, cache_creation: { ephemeral_5m_input_tokens: 200, ephemeral_1h_input_tokens: 0 }, output_tokens: 300 } });
+    const seen = [];
+    const upstream = http.createServer((req, res) => { seen.push(req.headers['x-api-key']); req.resume(); req.on('end', () => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(reply); }); });
+    await new Promise((r) => upstream.listen(0, '127.0.0.1', r));
+    const dashPort = await freePort();
+    // the proxy first: it creates <data>/live.db, so the dashboard finds it on its first look
+    const proxy = spawnCli(['proxy', '--port', '0', '--data-dir', data, '--dashboard', `http://127.0.0.1:${dashPort}`, '--upstream', `http://127.0.0.1:${upstream.address().port}`, '--tenant', 'checkout']);
+    const dash = serve(['--data-dir', data, '--port', String(dashPort)]);
+    try {
+      const proxyUrl = await waitUntil(() => /listening on (http:\/\/\S+)/.exec(proxy.out)?.[1], { timeout: 20_000, interval: 50, what: `the proxy to start (stdout: ${proxy.out} stderr: ${proxy.err})` });
+      assert.match(proxy.out, /export ANTHROPIC_BASE_URL=http:\/\/127\.0\.0\.1:\d+/, 'it tells you how to point your app at it');
+      assert.match(proxy.out, /created .*live\.db with the real price list/);
+      const url = await dash.url();
+
+      const res = await fetch(`${proxyUrl}/v1/messages`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': 'sk-ant-test-key' }, body: JSON.stringify({ model: 'claude-sonnet-5-5', messages: [{ role: 'user', content: 'hi' }] }) });
+      assert.equal(res.status, 200);
+      assert.equal((await res.json()).id, 'msg_1');
+      assert.deepEqual(seen, ['sk-ant-test-key']);
+
+      const totals = await waitUntil(async () => {
+        const r = await fetch(`${url}/d/live/api/summary`);
+        const j = r.status === 200 ? await r.json() : null;
+        return j?.totals?.requests === 1 ? j.totals : null;
+      }, { timeout: 20_000, interval: 200, what: `the call to show up in the dashboard (proxy stdout: ${proxy.out} stderr: ${proxy.err})` });
+      assert.deepEqual([totals.tokens_in, totals.tokens_out, totals.cost_micro_usd], [1700, 300, 5600]);
+      const sources = (await (await fetch(`${url}/api/sources`)).json()).sources;
+      assert.equal(sources.find((x) => x.id === 'live')?.kind, 'live');
+      const { rows } = await (await fetch(`${url}/d/live/api/requests?sort=recent`)).json();
+      assert.deepEqual(rows.map((r) => [r.tenant_id, r.endpoint, r.status, r.llm_calls]), [['checkout', '/v1/messages', 200, 1]], 'labelled with the --tenant given to the proxy');
+      assert.ok(!(proxy.out + proxy.err).includes('sk-ant-test-key'), 'the key is not in the proxy output');
+    } finally {
+      assert.equal((await proxy.stop())?.code, 0, `proxy exit; stderr: ${proxy.err}`);
+      assert.equal((await dash.stop())?.code, 0);
+      await new Promise((r) => { upstream.close(r); upstream.closeAllConnections?.(); });
     }
   });
 });

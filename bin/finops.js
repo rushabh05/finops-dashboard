@@ -4,6 +4,7 @@
 //   finops start [--port N] [--host H] [--data-dir DIR] [--db FILE] [--open]
 //   finops import claude-code [importer options]     your own Claude Code usage  -> <data dir>/claude-code.db
 //   finops import trace <trace.csv> [importer options]   a public trace (BurstGPT, Azure LLM inference)
+//   finops proxy [--port N] [--tenant NAME] ...        record your app's Anthropic API calls live (point ANTHROPIC_BASE_URL at it)
 //   finops check-llm                                  live check of ANTHROPIC_API_KEY against the real API
 //   finops check-webhook                              send a test message to ALERT_WEBHOOK_URL
 //
@@ -32,6 +33,9 @@ usage:
         import your own Claude Code usage (usage metadata only, never message text); then 'finops start'.
   finops import trace <trace.csv> [--format auto|burstgpt|azure] [--db FILE] [--replace] ...
         import a public LLM traffic trace.
+  finops proxy [--port 8788] [--tenant NAME] [--source live] [--upstream URL] [--verbose]
+        a local proxy that records the cost of every Anthropic Messages API call your app makes, live, in the dashboard:
+        run it, then start your app with ANTHROPIC_BASE_URL=http://127.0.0.1:8788. Token counts only, never prompts or keys.
   finops check-llm
         send one tiny request with ANTHROPIC_API_KEY to confirm explanations can use the real API.
   finops check-webhook
@@ -132,6 +136,7 @@ switch (cmd) {
   case '--version': case '-v': case 'version': console.log(pkg.version); code = 0; break;
   case 'start': code = await start(rest); break;
   case 'import': code = await importCmd(rest); break;
+  case 'proxy': { const { value, rest: args } = takeOption(rest, 'data-dir'); code = await run('scripts/proxy.js', args, { env: { DATA_DIR: dataDirFrom(value) } }); break; }
   case 'check-llm': code = await run('scripts/check-anthropic.js', rest); break;
   case 'check-webhook': code = await run('scripts/check-webhook.js', rest); break;
   default: fail(`unknown command "${cmd}"\n\n${HELP}`);

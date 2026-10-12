@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+* **`finops proxy`: live cost tracking.** A local proxy (`src/proxy.js`) for the Anthropic Messages API: point `ANTHROPIC_BASE_URL` at it and every call's tenant, endpoint, status, duration, model and token counts
+  (never prompts, answers, headers or keys) is recorded into a `live` database of the dashboard through its ordinary ingest endpoint. Streaming and compressed responses, failures (429/5xx/529) and client aborts (499) are
+  recorded; the usage mapping is the Claude Code importer's own function; unpriced models are named and counted without losing their batch. Safety: fixed upstream (a request path cannot pick another host), loopback only,
+  refuses the simulated sample database, https for anything remote. 15 new tests plus two real-process tests, checked by mutation. **Tested against a fake Anthropic API, not the real one.**
 * **Alert notifications.** `ALERT_WEBHOOK_URL` posts every new alert to Slack, Discord or any JSON endpoint (`src/notify.js`); `finops check-webhook` sends a test message. Simulated alerts never notify
   (decided at run time: configured to simulate, or the simulator has written to the database) unless `ALERT_WEBHOOK_SIMULATED=1`. The URL is treated as a secret (never logged, never in `/api/stats`, https required except for
   localhost, redirects not followed), delivery is asynchronous with a timeout, one retry and a bounded queue. `/api/stats` gains a `webhook` block. 12 new tests (`tests/notify.test.js`), checked by mutation.
