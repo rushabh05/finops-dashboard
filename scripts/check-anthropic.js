@@ -12,7 +12,7 @@ import { anthropicSource } from '../src/explain.js';
 
 const cfg = loadConfig();
 if (!cfg.anthropicKey) {
-  console.error('ANTHROPIC_API_KEY is not set. Example:  ANTHROPIC_API_KEY=sk-ant-... npm run check:llm');
+  console.error('ANTHROPIC_API_KEY is not set. Example:  ANTHROPIC_API_KEY=sk-ant-... ' + (process.env.FINOPS_CLI ? 'finops check-llm' : 'npm run check:llm'));
   process.exit(2);
 }
 const system = 'You write one short sentence. No preamble.';

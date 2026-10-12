@@ -11,12 +11,13 @@ import { resolve, basename } from 'node:path';
 import { existsSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { scanBounds, traceRequests, makeTimeMap, makeTenantPicker, guessService, DEFAULT_MODEL_MAP } from '../src/import/traces.js';
-import { createImportDb, BatchWriter, backfillDetection, finishImport, describeDb, fmtInt, fmtUsd, DAY } from '../src/import/common.js';
+import { createImportDb, BatchWriter, backfillDetection, finishImport, describeDb, fmtInt, fmtUsd, DAY, usagePrefix, viewHint } from '../src/import/common.js';
 import { parsePriceArg } from '../src/import/prices.js';
 import { verifyRollups } from '../src/ingest.js';
 import { listAlerts } from '../src/alerts.js';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
+const DATA_DIR = process.env.DATA_DIR || resolve(ROOT, 'data'); // same default as the server, so `finops start` finds what was imported
 const { values: a, positionals } = parseArgs({
   allowPositionals: true,
   options: {
@@ -39,7 +40,7 @@ const { values: a, positionals } = parseArgs({
     help: { type: 'boolean', short: 'h', default: false },
   },
 });
-const usage = `usage: npm run import:trace -- <trace.csv> [--format auto|burstgpt|azure] [--service code|conv] [--db FILE] [--replace]
+const usage = `usage: ${usagePrefix('trace')} <trace.csv> [--format auto|burstgpt|azure] [--service code|conv] [--db FILE] [--replace]
          [--tenants N] [--skew S] [--seed N] [--sample P] [--days N] [--end now|keep|ISO] [--start-date YYYY-MM-DD]
          [--model NAME] [--model-map ChatGPT=claude-haiku-5-5,GPT-4=claude-sonnet-5-5] [--price MODEL=in,out]
          [--detect-days N] [--no-verify]`;
@@ -77,7 +78,7 @@ const keepFromTs = a.days ? timeMap(bounds.max) - num('days', a.days, { min: 0.0
 
 const pretty = format === 'burstgpt' ? 'BurstGPT' : `Azure LLM inference trace (${service})`;
 const priceBasis = format === 'burstgpt' ? 'prices are assumed mid-2023 list prices' : `every call is priced as ${a.model}`;
-const dbPath = a.db ? resolve(a.db) : resolve(ROOT, 'data', format === 'burstgpt' ? 'burstgpt.db' : `azure-${service}.db`);
+const dbPath = a.db ? resolve(a.db) : resolve(DATA_DIR, format === 'burstgpt' ? 'burstgpt.db' : `azure-${service}.db`);
 let imp;
 try {
   imp = createImportDb({
@@ -126,4 +127,4 @@ if (detectDays > 0) {
 finishImport(imp);
 imp.db.close();
 out();
-out(`done in ${((Date.now() - t0) / 1000).toFixed(1)} s.  View it:  DB_PATH=${dbPath} npm start`);
+out(`done in ${((Date.now() - t0) / 1000).toFixed(1)} s.  View it:  ${viewHint(dbPath, DATA_DIR)}`);

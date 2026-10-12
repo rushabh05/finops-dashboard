@@ -1,4 +1,5 @@
 import { existsSync, rmSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { openDb, getMeta, setMeta, ChangeLog } from '../db.js';
 import { PriceBook } from '../pricing.js';
@@ -130,6 +131,14 @@ export function finishImport({ db, changeLog }) {
   db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
 }
 
+/** The importers are run either as `npm run import:*` or through the `finops` command (bin/finops.js sets FINOPS_CLI): hints name whichever was used. */
+export const viaCli = () => !!process.env.FINOPS_CLI;
+export const usagePrefix = (kind) => (viaCli() ? `finops import ${kind}` : `npm run import:${kind} --`);
+export function viewHint(dbPath, dataDir) {
+  if (!viaCli()) return `DB_PATH=${dbPath} npm start`;
+  const q = (p) => (/[\s'"$]/.test(p) ? `'${p.replace(/'/g, `'\\''`)}'` : p);
+  return dirname(resolve(dbPath)) === resolve(dataDir) ? `finops start --data-dir ${q(resolve(dataDir))}` : `finops start --db ${q(dbPath)}`;
+}
 export const fmtInt = (n) => Math.round(n).toLocaleString('en-US');
 export const fmtUsd = (micro) => {
   const v = micro / 1e6;

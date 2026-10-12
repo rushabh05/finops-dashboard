@@ -28,7 +28,7 @@ and a built-in **data source switcher** moves between the simulated sample and a
 <a href="docs/media/finops-promo.mp4"><img src="docs/media/finops-promo-poster.jpg" alt="FinOps: a 48-second film. Click to watch." width="720"></a>
 
 *Know where every dollar goes.* A 48-second film of the real dashboard (1080p, 60 fps, with sound): click the picture to play it in GitHub, or
-[download the mp4](docs/media/finops-promo.mp4) (37 MB). Everything on screen is the app's own UI running on its seeded **simulated** sample data (the film says so in a
+[download the mp4](docs/media/finops-promo.mp4) (25 MB). Everything on screen is the app's own UI running on its seeded **simulated** sample data (the film says so in a
 small caption), the explanation text is the built-in mock model, and the score is original. The film and its score are released under the same [MIT license](LICENSE) as the code.
 
 **Zero npm dependencies.** Node's built-in `node:http`, `node:sqlite`, `node:crypto`, `node:test`; the WebSocket handshake and framing are
@@ -42,7 +42,7 @@ Requires **Node >= 22.13** (`node:sqlite` without a flag). No `npm install` is n
 ```
 git clone https://github.com/rushabh05/finops-dashboard.git && cd finops-dashboard
 npm start                    # http://127.0.0.1:8787  (first run seeds 30 days of simulated history in ~3 s)
-npm test                     # 148 tests, ~12 s
+npm test                     # 152 tests, ~20 s
 ```
 
 Open the page and wait a few seconds: the simulator writes live traffic and plants three anomalies (a tenant cost spike, prompt bloat,
@@ -56,6 +56,32 @@ npm run import:claude-code   # your own Claude Code usage            -> data/cla
 npm run import:trace -- data/datasets/burstgpt-v2.0/BurstGPT_1.csv   # a real public trace -> data/burstgpt.db
 npm start                    # the "Data source" menu (top left) now lists them: pick one
 ```
+
+### The `finops` command
+
+The same thing behind one command, so you do not have to remember which script is which, and so it runs without cloning anything (`bin/finops.js`; no dependencies,
+it runs the entry points above as child processes):
+
+```
+npx github:rushabh05/finops-dashboard start --open      # nothing to clone or install: fetches, serves, opens your browser
+npm install -g github:rushabh05/finops-dashboard        # or install it once ...
+finops import claude-code                               # ... your own Claude Code usage -> ~/.finops-dashboard/claude-code.db
+finops start --open                                     # the sample + everything you imported, with the Data source menu
+```
+
+| Command | Does |
+|---|---|
+| `finops start [--port N] [--host H] [--data-dir DIR] [--db FILE] [--open]` | serves every database in the data directory (or exactly `--db FILE`); `--open` opens the browser once the server is up |
+| `finops import claude-code [--days N] [--replace] ...` | your own Claude Code usage (metadata only, never message text); every option of `npm run import:claude-code` works |
+| `finops import trace <file.csv> [--format ...] ...` | a public trace (BurstGPT, Azure LLM inference); every option of `npm run import:trace` works |
+| `finops check-llm` | one tiny request with `ANTHROPIC_API_KEY`, to confirm explanations can use the real API |
+| `finops --version`, `finops --help` | |
+
+**Where the data lives.** `finops` keeps databases in `--data-dir`, else `$DATA_DIR`, else **`~/.finops-dashboard`** (created owner-only, mode 700, because it holds your
+usage data). That default is deliberate: run through `npx`, the package sits in a cache that is thrown away, so the `data/` folder `npm start` uses inside a clone would
+lose your imports. `npm start` and `npm run import:*` are unchanged and still use `data/` in the clone; both now also honour `DATA_DIR`. Everything else (`PORT`, `HOST`,
+`AUTH_TOKEN`, `ANTHROPIC_API_KEY`, ...) is read from the environment exactly as in [Configuration](#configuration). There is deliberately no `--token` flag: a secret on the command line is
+visible to every user of the machine in `ps`.
 
 ### Data sources and the switcher
 
@@ -95,6 +121,7 @@ src/
   ws.js          RFC 6455 handshake + frames      queries.js    REST queries, CSV export
   security.js    allowlists, body caps, origin    server.js     routes, SSE + WS endpoints, app wiring
   multi.js       multi-database front door: discovers data/*.db, routes /d/<id>/..., the source switcher's list
+bin/finops.js    the `finops` command (start, import, check-llm): a front door over server.js and scripts/
   import/        claude-code.js (transcripts -> requests), traces.js (BurstGPT / Azure CSV -> requests),
                  prices.js (real dated price lists), common.js (protected import DB, batch writer, detector backfill)
 public/          index.html, style.css, app.js, charts.js, stream.js, dom.js, format.js
@@ -447,7 +474,7 @@ Channel limits (`bufferLimit`, `drainMark`, `maxPending`, `maxRowsPerFrame`, `hi
 
 ## Tests
 
-`npm test` runs 148 `node:test` tests (about 12 s, run serially):
+`npm test` runs 152 `node:test` tests (about 20 s, run serially):
 
 * **pricing**: cached tokens and cache writes (5-minute / 1-hour), rounding, `effective_from`, a `BigInt` reference on 5,000 random inputs each with and without writes;
 * **ingest**: validation (every field), batch cap, idempotency, atomic rollback, **rollups vs brute-force recomputation** after randomised
@@ -475,6 +502,9 @@ Channel limits (`bufferLimit`, `drainMark`, `maxPending`, `maxRowsPerFrame`, `hi
   isolation between sources (data, tags, simulator refused on imports), static assets and SSE/WebSocket under `/d/<id>/`, unknown or traversal-style paths, Origin/Host under the prefix, writes landing in the
   right database, the sample simulator pausing when nobody watches and honouring a manual pause, `DEFAULT_SOURCE`, authentication at the front door (the cookie flow keeps the prefix), the non-loopback guard, and
   closing every workspace; plus a **static check that every URL the page uses is relative** (what makes `/d/<id>/` work) and a WebSocket test that the server answers a client close with exactly one close frame;
+* **the `finops` command** (`finops-bin.test.js`): help/version and every way to get a command wrong (exit status 2, the message); `finops start --data-dir` creates the directory owner-only, serves multi-database mode
+  and passes SIGTERM on to the server (exit 0); an import made with `finops import claude-code` lands in the data directory, prints a hint that names `finops` rather than npm, and is served by `finops start` with the numbers of the
+  fixture; `--db FILE` gives exactly that database with no switcher. (Checked by mutation: no data-dir, a world-readable directory, a swallowed SIGTERM and a missing hint each fail a test.)
 * **the real entry point** (`cli.test.js`): launches `node src/server.js` as a child process the way `npm start` does, in multi-database mode, with `DB_PATH` (single database) and with `AUTH_TOKEN`; checks it announces itself,
   answers over HTTP, stops cleanly on SIGTERM, refuses a non-loopback address without a token / a too-short token / a busy port with exit status 1 and a clear message, and that importing the module starts nothing.
   This exists because the first published version's `npm start` deadlocked on a circular import (the entry module awaited a module that imported it back) and exited silently, which no test noticed since all the others import the

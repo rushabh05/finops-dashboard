@@ -10,15 +10,16 @@ import { parseArgs } from 'node:util';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scanTranscripts, buildRequests, findTranscripts, DEFAULT_ROOT } from '../src/import/claude-code.js';
-import { createImportDb, BatchWriter, backfillDetection, finishImport, describeDb, fmtInt, fmtUsd, DAY } from '../src/import/common.js';
+import { createImportDb, BatchWriter, backfillDetection, finishImport, describeDb, fmtInt, fmtUsd, DAY, usagePrefix, viewHint } from '../src/import/common.js';
 import { parsePriceArg } from '../src/import/prices.js';
 import { verifyRollups } from '../src/ingest.js';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
+const DATA_DIR = process.env.DATA_DIR || resolve(ROOT, 'data'); // same default as the server, so `finops start` finds what was imported
 const { values: a } = parseArgs({
   options: {
     root: { type: 'string', default: DEFAULT_ROOT },
-    db: { type: 'string', default: resolve(ROOT, 'data/claude-code.db') },
+    db: { type: 'string', default: resolve(DATA_DIR, 'claude-code.db') },
     replace: { type: 'boolean', default: false },
     days: { type: 'string' },
     since: { type: 'string' },
@@ -29,7 +30,7 @@ const { values: a } = parseArgs({
   },
 });
 if (a.help) {
-  console.log(`usage: npm run import:claude-code -- [--db FILE] [--replace] [--days N | --since YYYY-MM-DD] [--root DIR]
+  console.log(`usage: ${usagePrefix('claude-code')} [--db FILE] [--replace] [--days N | --since YYYY-MM-DD] [--root DIR]
                                        [--detect-days N] [--price MODEL=in,out[,read[,write5m[,write1h]]]] [--no-verify]`);
   process.exit(0);
 }
@@ -118,4 +119,4 @@ if (detectDays > 0) {
 finishImport(imp);
 imp.db.close();
 out();
-out(`done in ${((Date.now() - t0) / 1000).toFixed(1)} s.  View it:  DB_PATH=${a.db} npm start`);
+out(`done in ${((Date.now() - t0) / 1000).toFixed(1)} s.  View it:  ${viewHint(a.db, DATA_DIR)}`);

@@ -27,6 +27,18 @@
   ],
   "private": true,
   "type": "module",
+  "bin": {
+    "finops": "bin/finops.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "scripts",
+    "public",
+    "LICENSE",
+    "README.md",
+    "SECURITY.md"
+  ],
   "engines": {
     "node": ">=22.13"
   },
