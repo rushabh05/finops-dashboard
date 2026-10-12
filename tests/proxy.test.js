@@ -85,14 +85,16 @@ async function stack(t, { proxyOptions = {}, dashboardOptions = {} } = {}) {
   const logs = [];
   const proxy = createProxy({ upstream: upstream.url, dashboard: dashboard.url, source: 'live', tenant: 'default', port: 0, log: (m) => logs.push(m), verbose: true, flushMs: 20, authToken: dashboardOptions.authToken, ...proxyOptions });
   await proxy.listen();
-  t.after(async () => { await proxy.close(); await dashboard.close(); await upstream.close(); rmSync(dir, { recursive: true, force: true }); });
+  t.after(async () => { await proxy.close(); await dashboard.close(); await upstream.close(); rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); });
   const call = async (headers = {}, { body = JSON.stringify({ model: 'claude-sonnet-5-5', max_tokens: 100, messages: [{ role: 'user', content: PROMPT }] }), path = '/v1/messages', method = 'POST' } = {}) => {
     const res = await fetch(`${proxy.url}${path}`, { method, headers: { 'content-type': 'application/json', 'x-api-key': KEY, 'anthropic-version': '2023-06-01', ...headers }, body: method === 'GET' ? undefined : body });
     return { res, bytes: Buffer.from(await res.arrayBuffer()) };
   };
   const db = () => new DatabaseSync(join(dir, 'live.db'), { readOnly: true });
+  // every handle is closed at once: an open file cannot be deleted on Windows (EBUSY), so a leaked handle would fail the cleanup there
+  const count = () => { const d = db(); try { return d.prepare('SELECT COUNT(*) AS n FROM requests').get().n; } finally { d.close(); } };
   const rows = async (n) => {
-    await waitUntil(async () => { await proxy.recorder.idle(500); return db().prepare('SELECT COUNT(*) AS n FROM requests').get().n >= n; }, { what: `${n} request(s) in the dashboard database (proxy stats ${JSON.stringify(proxy.stats)}, logs ${JSON.stringify(logs)})` });
+    await waitUntil(async () => { await proxy.recorder.idle(500); return count() >= n; }, { what: `${n} request(s) in the dashboard database (proxy stats ${JSON.stringify(proxy.stats)}, logs ${JSON.stringify(logs)})` });
     const d = db();
     try {
       return d.prepare('SELECT r.id, r.tenant_id, r.endpoint, r.method, r.status, r.duration_ms, c.model, c.input_tokens, c.output_tokens, c.cached_tokens, c.cache_write_tokens, c.cache_write_1h_tokens, c.cost_micro_usd FROM requests r LEFT JOIN llm_calls c ON c.request_id = r.id ORDER BY r.ts, r.id').all();
@@ -269,7 +271,7 @@ test('the dashboard being down is not the app\'s problem: calls still work, reco
   const proxy = createProxy({ upstream: upstream.url, dashboard: `http://127.0.0.1:${port}`, source: 'live', port: 0, flushMs: 20, log: (m) => logs.push(m) });
   await proxy.listen();
   let dashboard;
-  t.after(async () => { await proxy.close(); await dashboard?.close(); await upstream.close(); rmSync(dir, { recursive: true, force: true }); });
+  t.after(async () => { await proxy.close(); await dashboard?.close(); await upstream.close(); rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); });
   for (let i = 0; i < 3; i++) assert.equal((await fetch(`${proxy.url}/v1/messages`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': KEY }, body: '{}' })).status, 200);
   await waitUntil(() => logs.some((l) => /cannot reach the dashboard/.test(l)), { what: 'a warning that the dashboard is unreachable' });
   assert.equal(proxy.stats.recorded, 0);
@@ -303,7 +305,7 @@ test('a dashboard in single-database mode (DB_PATH) is found too: the ingest pat
   await dashboard.listen();
   const proxy = createProxy({ upstream: upstream.url, dashboard: dashboard.url, source: 'ignored-in-single-mode', port: 0, flushMs: 20 });
   await proxy.listen();
-  t.after(async () => { await proxy.close(); await dashboard.close(); await upstream.close(); rmSync(dir, { recursive: true, force: true }); });
+  t.after(async () => { await proxy.close(); await dashboard.close(); await upstream.close(); rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); });
   await fetch(`${proxy.url}/v1/messages`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-test': 'json' }, body: '{}' });
   await waitUntil(() => proxy.stats.recorded === 1, { what: `a recorded request (${JSON.stringify(proxy.stats)})` });
   const sum = await (await fetch(`${dashboard.url}/api/summary`)).json();
@@ -341,7 +343,7 @@ test('ensureLiveDb: creates the database with the real price list, is idempotent
     setMeta(x, 'source', 'import:claude-code');
     x.close();
     assert.throws(() => ensureLiveDb(imported), /holds imported data/);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); }
 });
 
 test('usage mapping is the importer\'s: one definition, so imported and proxied numbers cannot disagree', () => {
