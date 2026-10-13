@@ -164,8 +164,8 @@ export function requestList(db, f, { sort = 'recent', limit = 25 } = {}) {
 export function requestDetail(db, priceBook, id) {
   const r = db.prepare('SELECT id, ts, tenant_id, endpoint, method, status, duration_ms, infra_cost_micro_usd FROM requests WHERE id = ?').get(id);
   if (!r) return null;
-  const calls = db.prepare(`SELECT id, ts, model, input_tokens, output_tokens, cached_tokens, cache_write_tokens, cache_write_1h_tokens, latency_ms, cost_micro_usd FROM llm_calls WHERE request_id = ? ORDER BY ts, id`).all(id).map((c) => {
-    const p = priceBook.priceAt(c.model, c.ts);
+  const calls = db.prepare(`SELECT id, ts, model, input_tokens, output_tokens, cached_tokens, cache_write_tokens, cache_write_1h_tokens, latency_ms, cost_micro_usd, cost_source FROM llm_calls WHERE request_id = ? ORDER BY ts, id`).all(id).map((c) => {
+    const p = c.cost_source === 'supplied' ? null : priceBook.priceAt(c.model, c.ts); // a supplied cost was not computed from the table: no price to show
     return { ...c, price: p ? { input_per_mtok: p.input_per_mtok, output_per_mtok: p.output_per_mtok, cached_per_mtok: p.cached_per_mtok, cache_write_per_mtok: p.cache_write_per_mtok, cache_write_1h_per_mtok: p.cache_write_1h_per_mtok } : null };
   });
   const llm = calls.reduce((n, c) => n + c.cost_micro_usd, 0);

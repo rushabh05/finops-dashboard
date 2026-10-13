@@ -5,7 +5,8 @@
 //   finops import claude-code [importer options]     your own Claude Code usage  -> <data dir>/claude-code.db
 //   finops import trace <trace.csv> [importer options]   a public trace (BurstGPT, Azure LLM inference)
 //   finops import anthropic-usage [options]           your organization's usage from Anthropic's Admin API (ANTHROPIC_ADMIN_KEY)
-//   finops proxy [--port N] [--tenant NAME] ...        record your app's Anthropic API calls live (point ANTHROPIC_BASE_URL at it)
+//   finops proxy [--port N] [--tenant NAME] ...        record your app's LLM calls live (Anthropic; --provider adds OpenAI, DeepSeek, OpenRouter, ...)
+//   finops key-label                                  the one-way label `proxy --tenant-by-key` gives an API key (read from stdin)
 //   finops check-llm                                  live check of ANTHROPIC_API_KEY against the real API
 //   finops check-webhook                              send a test message to ALERT_WEBHOOK_URL
 //
@@ -37,9 +38,15 @@ usage:
   finops import anthropic-usage [--days N] [--bucket 1h|1d] [--tenant-by workspace|api-key|account|service-account] [--replace] ...
         import your ORGANIZATION's token usage from Anthropic's Usage & Cost Admin API (needs ANTHROPIC_ADMIN_KEY: an organization Admin key,
         which individual accounts do not have) and check the computed cost against what Anthropic billed.
-  finops proxy [--port 8788] [--tenant NAME] [--source live] [--upstream URL] [--verbose]
-        a local proxy that records the cost of every Anthropic Messages API call your app makes, live, in the dashboard:
-        run it, then start your app with ANTHROPIC_BASE_URL=http://127.0.0.1:8788. Token counts only, never prompts or keys.
+  finops import fastrouter --ids FILE | --file EXPORT [--append] [--check] ...
+        import FastRouter's PAST requests: --ids looks each request id up with FastRouter's /generation API (needs FASTROUTER_API_KEY; FastRouter has
+        no call that lists past requests, so the ids come from you), --file reads an Activity Log export (CSV / JSON), matching columns by name.
+  finops proxy [--port 8788] [--tenant NAME] [--source live] [--upstream URL] [--provider openai|deepseek|openrouter|NAME=URL ...] [--tenant-by-key] [--verbose]
+        a local proxy that records the cost of every LLM call your app makes, live, in the dashboard: Anthropic at the root (start your app with
+        ANTHROPIC_BASE_URL=http://127.0.0.1:8788), and with --provider also OpenAI, DeepSeek, OpenRouter or any OpenAI-compatible endpoint, one
+        prefix each. --tenant-by-key tells API keys apart. Token counts and cost only, never prompts or keys.
+  finops key-label
+        read an API key from stdin and print the one-way label that --tenant-by-key gives it (to name it in --key-map).
   finops check-llm
         send one tiny request with ANTHROPIC_API_KEY to confirm explanations can use the real API.
   finops check-webhook
@@ -124,9 +131,9 @@ async function start(argv) {
 
 async function importCmd(argv) {
   const [kind, ...rest0] = argv;
-  const scripts = { 'claude-code': 'scripts/import-claude-code.js', trace: 'scripts/import-trace.js', 'anthropic-usage': 'scripts/import-anthropic-usage.js' };
+  const scripts = { 'claude-code': 'scripts/import-claude-code.js', trace: 'scripts/import-trace.js', 'anthropic-usage': 'scripts/import-anthropic-usage.js', fastrouter: 'scripts/import-fastrouter.js' };
   if (!kind || kind === '--help' || kind === '-h') { console.log(HELP); return kind ? 0 : 2; }
-  if (!scripts[kind]) fail(`unknown importer "${kind}" (expected: claude-code, trace, anthropic-usage)\n\n${HELP}`);
+  if (!scripts[kind]) fail(`unknown importer "${kind}" (expected: claude-code, trace, anthropic-usage, fastrouter)\n\n${HELP}`);
   const { value: dataDirFlag, rest } = takeOption(rest0, 'data-dir');
   if (rest.includes('--help') || rest.includes('-h')) return run(scripts[kind], rest);
   // The importers write to $DATA_DIR (default <package>/data) unless --db says otherwise: point that at the user's data directory.
@@ -141,6 +148,7 @@ switch (cmd) {
   case 'start': code = await start(rest); break;
   case 'import': code = await importCmd(rest); break;
   case 'proxy': { const { value, rest: args } = takeOption(rest, 'data-dir'); code = await run('scripts/proxy.js', args, { env: { DATA_DIR: dataDirFrom(value) } }); break; }
+  case 'key-label': code = await run('scripts/key-label.js', rest); break;
   case 'check-llm': code = await run('scripts/check-anthropic.js', rest); break;
   case 'check-webhook': code = await run('scripts/check-webhook.js', rest); break;
   default: fail(`unknown command "${cmd}"\n\n${HELP}`);

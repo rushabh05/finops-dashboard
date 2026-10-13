@@ -38,11 +38,16 @@ function importerOwned(path) {
  * Create (or, with replace, recreate) the database an importer writes into.
  * Refuses to overwrite a database that has data and was not created by an importer (e.g. the simulator's data/finops.db).
  */
-export function createImportDb({ path, replace = false, source, note, priceOverrides = [], maxCallsPerRequest = 5000 }) {
+export function createImportDb({ path, replace = false, append = false, source, note, priceOverrides = [], maxCallsPerRequest = 5000 }) {
   if (path !== ':memory:') {
     const files = [path, `${path}-wal`, `${path}-shm`];
-    if (files.some((f) => existsSync(f))) {
-      if (!replace) throw new Error(`${path} already exists - pass --replace to rebuild it, or choose another --db`);
+    if (append && existsSync(path)) {
+      // continue an earlier run of the SAME importer: keep what is there, and refuse anything else
+      let held;
+      try { const probe = new DatabaseSync(path, { readOnly: true }); try { held = probe.prepare("SELECT value FROM meta WHERE key = 'source'").get()?.value; } finally { probe.close(); } } catch { held = undefined; }
+      if (held !== source) throw new Error(`${path} was not created by this importer (${source}): refusing to add to it`);
+    } else if (files.some((f) => existsSync(f))) {
+      if (!replace) throw new Error(`${path} already exists - pass --replace to rebuild it${append ? '' : ', --append to add to it'}, or choose another --db`);
       if (existsSync(path) && !importerOwned(path)) throw new Error(`${path} holds data that was not created by an importer (simulator or live ingest): refusing to overwrite it`);
       for (const f of files) rmSync(f, { force: true });
     }

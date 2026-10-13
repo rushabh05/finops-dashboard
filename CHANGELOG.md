@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.2.0 - 2026-10-13
+
+* **`finops proxy` records OpenAI, DeepSeek, OpenRouter and any OpenAI-compatible gateway, and can tell API keys apart.** `--provider openai|deepseek|openrouter|NAME=URL` (repeatable) adds a route under its own prefix
+  (`/openai/v1`, `/deepseek`, `/openrouter/api/v1`, `/NAME`) with its own fixed upstream; Anthropic stays at the root, unchanged. Chat-completion and Responses calls are recorded, streamed or not (`src/providers.js`).
+  **Cost**: OpenRouter's own per-call `usage.cost` (a bring-your-own-key call adds `upstream_inference_cost`: an assumption, flagged); OpenAI and DeepSeek at list prices (read from their pricing pages on 2026-10-13; DeepSeek's peak hours
+  cost double and are applied, Chinese holidays are not known); any other gateway through `--price`, or its own cost if you pass `--reported-cost NAME`. A model with no price is never guessed: the request is recorded without cost, named once in the log
+  and counted. `--tenant-by-key [--key-map FILE]` makes each API key a tenant, named by a one-way label (`key-` + 40 bits of SHA-256); `finops key-label` prints a key's label from stdin. Keys are hashed in memory, never stored or logged (a test greps
+  the database files, the log and the health endpoint). **Tested against fakes that follow the providers' documented formats, not the real services.**
+* **A call can supply its own cost** (`cost_micro_usd` on an `llm_calls` item of `POST /api/ingest`): no `model_prices` row needed, stored as it came, marked `cost_source = 'supplied'` (new column, added to older databases with a default).
+  Bounded to $1000 per call. Model names may now contain `/` (`openai/gpt-4o`). The request drill-down says where a supplied cost came from.
+* **`finops import fastrouter`: FastRouter's past requests** (`scripts/import-fastrouter.js`, `src/import/fastrouter.js`). FastRouter documents no call that lists past usage, so history comes from what you have: `--ids FILE` looks each request id up with `POST /api/v1/generation` (needs `FASTROUTER_API_KEY`;
+  retries, resumable with `--append`, stops at once on a refused key), `--file EXPORT` reads an Activity Log export (CSV / JSON / JSON lines) with columns matched by name, `--map` and `--check`. Cost is FastRouter's own `usage.cost` (USD; `credits_used` and any credits column are never used, their unit is undocumented);
+  keys are hashed labels; prompts and completions (which the generation API returns) are never kept; alerts are not computed. `createImportDb` gains `append`. **Tested against a fake that follows the docs and made-up exports, not the real FastRouter.**
+* 25 new tests (`tests/providers.test.js`, `tests/proxy-providers.test.js`, two real-process CLI tests): 214 in all, plus 13 for the FastRouter importer (`tests/import-fastrouter.test.js`): 227. Checked by mutation: 20 deliberate breakages of the proxy code (and 22 of the FastRouter importer, one of which survived and got an assertion), every one now caught by a test. Two survived the first round and exposed real gaps (no test sent a Responses API call; none checked that a supplied cost on a model the table *does* price is not shown as table-priced), and got tests; a third survivor was my mutation doing nothing, rewritten and caught. The run also exposed a flaky test of mine (it failed 12 times in 40 runs: rows read back by timestamp tied within one millisecond), now 0 in 40.
+
 ## 1.1.0 - 2026-10-13
 
 * **CI runs on Windows too** (`windows-latest`, Node 22.13.0 / 22.x / 24.x): the whole suite passes. The graceful-stop assertions are platform-aware (Windows has no SIGTERM). Found and fixed on the way: proxy tests leaked database handles (`EBUSY` on cleanup), a real-process test asserted on a stdout line the moment the line before it arrived, and the importer tests read process output on `exit` instead of `close`.
