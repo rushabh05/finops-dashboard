@@ -227,3 +227,59 @@ test('finops proxy + finops start, as real processes: a call made through the pr
     }
   });
 });
+
+test('finops proxy --provider / --price / --tenant-by-key, as real processes: the flags reach the proxy, the base URL is printed, and a call is recorded under its key\'s label', async () => {
+  await withDir(async (dir) => {
+    const data = join(dir, 'data');
+    const KEY = 'sk-gw-SECRET-GATEWAY-KEY';
+    const seen = [];
+    const upstream = http.createServer((req, res) => { seen.push([req.url, req.headers.authorization]); req.resume(); req.on('end', () => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ model: 'some-model', choices: [], usage: { prompt_tokens: 1000, completion_tokens: 200 } })); }); });
+    await new Promise((r) => upstream.listen(0, '127.0.0.1', r));
+    const dashPort = await freePort();
+    const proxy = spawnCli(['proxy', '--port', '0', '--data-dir', data, '--dashboard', `http://127.0.0.1:${dashPort}`, '--provider', `gw=http://127.0.0.1:${upstream.address().port}`, '--price', 'some-model=2,10', '--tenant-by-key']);
+    const dash = serve(['--data-dir', data, '--port', String(dashPort)]);
+    try {
+      const proxyUrl = await waitUntil(() => /listening on (http:\/\/\S+)/.exec(proxy.out)?.[1], { timeout: 20_000, interval: 50, what: `the proxy to start (stdout: ${proxy.out} stderr: ${proxy.err})` });
+      const sees = (re, what) => waitUntil(() => re.test(proxy.out), { timeout: 20_000, interval: 50, what: `${what} (stdout: ${proxy.out} stderr: ${proxy.err})` });
+      await sees(/gw\s+base_url=http:\/\/127\.0\.0\.1:\d+\/gw/, 'the proxy to print the base URL of the gw provider');
+      await sees(/tenants: one per API key/, 'the proxy to say it tells keys apart');
+      const url = await dash.url();
+
+      const res = await fetch(`${proxyUrl}/gw/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` }, body: '{"model":"some-model","messages":[]}' });
+      assert.equal(res.status, 200);
+      assert.deepEqual(seen, [['/v1/chat/completions', `Bearer ${KEY}`]], 'the prefix is stripped and the key is forwarded');
+      const totals = await waitUntil(async () => {
+        const r = await fetch(`${url}/d/live/api/summary`);
+        const j = r.status === 200 ? await r.json() : null;
+        return j?.totals?.requests === 1 ? j.totals : null;
+      }, { timeout: 20_000, interval: 200, what: `the call to show up in the dashboard (proxy stdout: ${proxy.out} stderr: ${proxy.err})` });
+      assert.deepEqual([totals.tokens_in, totals.tokens_out, totals.cost_micro_usd], [1000, 200, 1000 * 2 + 200 * 10], '--price reached the proxy');
+      const { rows } = await (await fetch(`${url}/d/live/api/requests?sort=recent`)).json();
+      const expected = spawnSync(process.execPath, [BIN, 'key-label'], { input: KEY, encoding: 'utf8' }).stdout.trim();
+      assert.deepEqual(rows.map((r) => [r.tenant_id, r.endpoint]), [[expected, '/gw/v1/chat/completions']]);
+      assert.match(expected, /^key-[0-9a-f]{10}$/);
+      assert.ok(!(proxy.out + proxy.err).includes(KEY), 'the key is not in the proxy output');
+    } finally {
+      assertStoppedCleanly(assert, await proxy.stop(), `proxy stderr: ${proxy.err}`);
+      assertStoppedCleanly(assert, await dash.stop());
+      await new Promise((r) => { upstream.close(r); upstream.closeAllConnections?.(); });
+    }
+  });
+});
+
+test('finops proxy: a wrong --provider, --price or --key-map is refused with exit 2 and a message that says what to do', async () => {
+  await withDir(async (dir) => {
+    const bad = (args) => finops(['proxy', '--data-dir', join(dir, 'd'), ...args]);
+    const a = bad(['--provider', 'nope']);
+    assert.equal(a.status, 2);
+    assert.match(a.stderr, /unknown provider "nope".*--provider nope=https/s);
+    assert.match(bad(['--provider', 'openai', '--reported-cost', 'deepseek']).stderr, /no provider called "deepseek"/);
+    assert.match(bad(['--price', 'gpt-x']).stderr, /bad --price/);
+    assert.match(bad(['--key-map', join(dir, 'missing.json')]).stderr, /cannot read --key-map/);
+    writeFileSync(join(dir, 'map.json'), '{"not-a-label": "x"}');
+    assert.match(bad(['--key-map', join(dir, 'map.json')]).stderr, /not a key label/);
+    writeFileSync(join(dir, 'arr.json'), '[1]');
+    assert.match(bad(['--key-map', join(dir, 'arr.json')]).stderr, /must hold a JSON object/);
+    assert.match(finops(['help']).stdout, /key-label/);
+  });
+});

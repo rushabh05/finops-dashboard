@@ -27,6 +27,7 @@ const RE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
 const KNOWN_LABELS = {
   'import:claude-code': 'Claude Code usage',
   'import:anthropic-usage': 'Anthropic usage (Admin API)',
+  'import:fastrouter': 'FastRouter (past requests)',
   'import:trace:burstgpt': 'BurstGPT public trace',
   'import:trace:azure-conv': 'Azure LLM trace: conversation',
   'import:trace:azure-code': 'Azure LLM trace: code',

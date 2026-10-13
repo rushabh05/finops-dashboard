@@ -473,6 +473,9 @@ function renderDetail() {
   if (!d.llm_calls.length) body.append(h('tr', null, h('td', { colspan: String(cols.length), class: 'muted', text: 'This request made no LLM calls (infrastructure cost only).' })));
   box.append(h('div', { class: 'tablewrap calls', tabindex: '0', role: 'region', 'aria-label': `LLM calls of this request (${d.llm_calls.length})` }, h('table', null, h('thead', null, head), body)));
   box.append(h('div', { class: 'kv' }, h('span', null, 'LLM ', h('b', { text: F.usd(d.llm_cost_micro_usd, { precise: true }) })), h('span', null, '+ infra ', h('b', { text: F.usd(d.infra_cost_micro_usd, { precise: true }) })), h('span', null, '= total ', h('b', { text: F.usd(d.total_cost_micro_usd, { precise: true }) }))));
+  const supplied = d.llm_calls.filter((c) => c.cost_source === 'supplied').length;
+  if (supplied) box.append(h('div', { class: 'hint', text: `${supplied === d.llm_calls.length ? 'The cost of every call here was' : `The cost of ${supplied} of ${d.llm_calls.length} calls was`} supplied by whatever recorded it (a gateway's own figure for the call, or the proxy's list price), not computed from model_prices.` }));
+  if (supplied === d.llm_calls.length && supplied) return;
   box.append(h('div', { class: 'hint', text: hasWrites ? 'Cost = (input − cached − cache writes) × input price + cached × cache-read price + cache writes × cache-write price (5 min / 1 h) + output × output price, from model_prices at the call time.' : 'Cost = (input − cached) × input price + cached × cached price + output × output price, from model_prices at the call time.' }));
 }
 

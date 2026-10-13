@@ -1,6 +1,6 @@
 {
   "name": "finops-dashboard",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Real-time FinOps dashboard: LLM + infrastructure cost per tenant/endpoint/call, live streaming with backpressure, LLM-written anomaly explanations, importers for Claude Code usage and public traces. Zero npm dependencies.",
   "license": "MIT",
   "author": "Rushabh Yeole (https://github.com/rushabh05)",
@@ -50,6 +50,7 @@
     "smoke:ui": "node --disable-warning=ExperimentalWarning scripts/ui-smoke.mjs",
     "import:claude-code": "node --disable-warning=ExperimentalWarning scripts/import-claude-code.js",
     "import:anthropic-usage": "node --disable-warning=ExperimentalWarning scripts/import-anthropic-usage.js",
+    "import:fastrouter": "node --disable-warning=ExperimentalWarning scripts/import-fastrouter.js",
     "import:trace": "node --disable-warning=ExperimentalWarning scripts/import-trace.js",
     "check:llm": "node --disable-warning=ExperimentalWarning scripts/check-anthropic.js",
     "proxy": "node --disable-warning=ExperimentalWarning scripts/proxy.js",

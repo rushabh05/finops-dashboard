@@ -47,7 +47,7 @@ Requires **Node >= 22.13** (`node:sqlite` without a flag). No `npm install` is n
 ```
 git clone https://github.com/rushabh05/finops-dashboard.git && cd finops-dashboard
 npm start                    # http://127.0.0.1:8787  (first run seeds 30 days of simulated history in ~3 s)
-npm test                     # 189 tests, ~30 s
+npm test                     # 227 tests, ~40 s
 ```
 
 Open the page and wait a few seconds: the simulator writes live traffic and plants three anomalies (a tenant cost spike, prompt bloat,
@@ -80,7 +80,9 @@ finops start --open                                     # the sample + everythin
 | `finops import claude-code [--days N] [--replace] ...` | your own Claude Code usage (metadata only, never message text); every option of `npm run import:claude-code` works |
 | `finops import trace <file.csv> [--format ...] ...` | a public trace (BurstGPT, Azure LLM inference); every option of `npm run import:trace` works |
 | `finops import anthropic-usage [--days N] [--tenant-by ...] ...` | your **organization's** usage from Anthropic's Admin API (`ANTHROPIC_ADMIN_KEY`), checked against the bill: see [below](#your-organizations-anthropic-usage-scriptsimport-anthropic-usagejs) |
-| `finops proxy [--port N] [--tenant NAME] [--source live] [--upstream URL] [--verbose]` | record your app's Anthropic API calls **live**: see [Live data](#live-data-finops-proxy) |
+| `finops import fastrouter --ids FILE \| --file EXPORT [--append] [--check]` | FastRouter's **past** requests, from ids you have or an Activity Log export: see [below](#fastrouters-past-requests-scriptsimport-fastrouterjs) |
+| `finops proxy [--port N] [--tenant NAME] [--source live] [--upstream URL] [--provider NAME ...] [--price MODEL=in,out,cached ...] [--tenant-by-key] [--verbose]` | record your app's LLM calls **live**: Anthropic, and with `--provider` OpenAI, DeepSeek, OpenRouter or any OpenAI-compatible gateway, per API key if you like: see [Live data](#live-data-finops-proxy) |
+| `finops key-label` | read an API key from stdin and print the one-way label `--tenant-by-key` gives it |
 | `finops check-llm` | one tiny request with `ANTHROPIC_API_KEY`, to confirm explanations can use the real API |
 | `finops check-webhook` | one test message to `ALERT_WEBHOOK_URL`, to confirm [alert notifications](#alert-notifications) are set up |
 | `finops --version`, `finops --help` | |
@@ -132,7 +134,7 @@ app --> proxy (127.0.0.1:8788) --> api.anthropic.com        the proxy forwards t
              +--> POST /api/ingest on the dashboard         tenant, endpoint, time, status, duration, model, token counts: nothing else
 ```
 
-- **It sees your API key in transit and never keeps it.** Neither keys nor prompts, answers or headers are stored or logged (a test greps the database files, the proxy's log and its health endpoint for them).
+- **It sees your API key in transit and never keeps it.** (With `--tenant-by-key` a one-way label of it is recorded; below.) Neither keys nor prompts, answers or headers are stored or logged (a test greps the database files, the proxy's log and its health endpoint for them).
   What reaches the dashboard is the `usage` block of each response. It listens on `127.0.0.1` only (run one beside each service rather than exposing it), forwards to the fixed `--upstream`
   (a request path such as `//evil.example/x` or an absolute-form request line cannot pick another host), and refuses to record into the simulated sample database.
 - **Same numbers as the importer.** Cached and cache-write tokens are mapped by the very function `finops import claude-code` uses, so imported and proxied usage of the same call cannot disagree
@@ -143,11 +145,46 @@ app --> proxy (127.0.0.1:8788) --> api.anthropic.com        the proxy forwards t
   and does not take the other calls in its batch down with it. Dated aliases (`claude-sonnet-5-5-20260101`) are recorded under the priced name.
 - **The dashboard being down is not your app's problem.** Calls keep working; up to 1000 records queue and are sent when it returns. Dashboard with `AUTH_TOKEN`: set the same `AUTH_TOKEN` in the proxy's
   environment (sent as a Bearer header; never a command-line flag).
-- **Anthropic Messages API only** (`POST /v1/messages`, streamed or not). Other paths are forwarded but not recorded. OpenAI-style APIs are **not** recorded: this project has no verified price list for
-  them, and a cost computed from a guessed price is worse than none.
+- **At the root, Anthropic's Messages API** (`POST /v1/messages`, streamed or not). Other providers are opt-in, below. Every other path is forwarded but not recorded.
 
 **Verified against a fake Anthropic API and a real dashboard, not yet against api.anthropic.com** (no API key was available while this was built). The shapes it reads (`message_start` /
 `message_delta` usage, the `cache_creation` breakdown, `error` events) follow Anthropic's documented streaming format and the usage records the importer already reads; a run with a real key is the one remaining check.
+
+#### OpenAI, DeepSeek, OpenRouter, other gateways, and many API keys
+
+One proxy can front several providers at once. Each is served under its own prefix and forwards to its own fixed upstream; the app keeps using its own key for each, which the proxy passes through:
+
+```
+finops proxy --provider openai --provider deepseek --provider openrouter --tenant-by-key
+
+export OPENAI_BASE_URL=http://127.0.0.1:8788/openai/v1        # the OpenAI SDKs, and anything built on them
+#   DeepSeek:    base_url = http://127.0.0.1:8788/deepseek
+#   OpenRouter:  base_url = http://127.0.0.1:8788/openrouter/api/v1
+finops proxy --provider fastrouter=https://gateway.example.com   # any other OpenAI-compatible endpoint: base_url = http://127.0.0.1:8788/fastrouter/...
+```
+
+The start-up output prints the base URL for each. Calls to `.../chat/completions` and `.../responses`, streamed or not, are recorded (embeddings, images, audio and other paths are forwarded, not recorded). The endpoint
+column carries the provider (`/openai/v1/chat/completions`), so one dashboard tells them apart; the model column carries the provider's own model id (`openai/gpt-4o`, `deepseek-flash`).
+
+**Where the cost of a call comes from** (the one thing that differs):
+
+| provider | cost | notes |
+|---|---|---|
+| OpenRouter | the call's own `usage.cost` (credits; OpenRouter's pricing is in US dollars) | exact, for any of its models and whichever provider served the call. A bring-your-own-key call also reports `cost_details.upstream_inference_cost`; the two are added. That sum is an **assumption** read from the docs' example (the fee is 5% of the upstream charge there), not yet checked on a real BYOK call |
+| OpenAI, DeepSeek | tokens x **list price**, computed by the proxy | prices read from [OpenAI's](https://developers.openai.com/api/docs/pricing) and [DeepSeek's](https://api-docs.deepseek.com/quick_start/pricing) pricing pages on 2026-10-13 (16 OpenAI models and the two DeepSeek models; see `src/providers.js`) |
+| any `NAME=URL` gateway | tokens x a `--price MODEL=in,out,cached` you give (USD per million tokens); or the response's `usage.cost` if you pass `--reported-cost NAME` | a gateway's `cost` is not assumed to be dollars unless you say so. FastRouter's [docs](https://docs.fastrouter.ai/api-reference/chat-completions.md) define `usage.cost` as USD: `--provider fastrouter=https://api.fastrouter.ai --reported-cost fastrouter`, app base URL `http://127.0.0.1:8788/fastrouter/api/v1`. They do not say whether a stream carries usage, or whether `cost` covers bring-your-own-key calls. The proxy only sees calls made from now on: for the past, see [FastRouter's past requests](#fastrouters-past-requests-scriptsimport-fastrouterjs) |
+
+- **No guesses.** A model with no price and no reported cost is recorded as a request **without cost**, named once in the proxy's log with the exact flag to add, and counted (`unpriced` in `/__finops/health`). The totals then understate by those calls: watch for it.
+- **List prices are Standard-tier.** Not modelled: flex, batch and priority ("fast") processing, prompts above a model's long-context threshold, regional data-residency uplifts and per-tool fees. DeepSeek bills twice as much in peak hours (01:00 to 04:00 and 06:00 to 10:00 UTC on weekdays); the proxy applies that,
+  but does not know Chinese public holidays, which DeepSeek bills at the off-peak rate, so a call on one is overestimated by up to 2x. Override any price with `--price`. Check the numbers against an invoice before relying on them.
+- **Streams need their usage block.** OpenRouter and DeepSeek send usage in the last chunk; OpenAI sends it in a chat stream only if the request asks (`stream_options: {"include_usage": true}`). A stream without it is recorded without cost, and the log says so once.
+- **Which key made a call.** `--tenant-by-key` records each API key as its own tenant, named by a one-way label (`key-3fa91c07d2`: the first 40 bits of a SHA-256 of the key). `--key-map keys.json` (`{"key-3fa91c07d2": "search-team"}`) gives them names; the log announces each new label once.
+  `printf %s "$OPENAI_API_KEY" | finops key-label` prints a key's label (read from stdin, so it never lands in your shell history). An `x-finops-tenant` header still wins over the key. The key is hashed in memory and never stored or logged; the label cannot be turned back into it,
+  but it is a stable fingerprint of the key, so treat the dashboard accordingly.
+- **For a whole company**, run the proxy beside each service (it listens on 127.0.0.1 only, on purpose), or have services report usage themselves to `POST /api/ingest`, which already takes a tenant and, now, a cost per call.
+
+**Verified against fake OpenAI, DeepSeek, OpenRouter and gateway servers that follow the providers' documented response formats, and a real dashboard; not against the real services** (no keys were available). The formats were read from
+the providers' own documentation (OpenRouter's usage accounting, DeepSeek's chat completion reference); OpenAI's usage fields (`prompt_tokens_details.cached_tokens`, the Responses API's `input_tokens`) and its stream behaviour are from memory of its public API and have not been re-read here. A run with real keys is the check that is missing.
 
 ### Data sources and the switcher
 
@@ -209,7 +246,7 @@ SQLite, money stored as **integer micro-dollars** (1 USD = 1,000,000). Tables: `
 `alerts` append `(table, row_id, op)` to `changes` (`seq` is `AUTOINCREMENT`, so a seq is never reused); that log is
 what the live feed follows.
 
-**LLM cost is always computed from `model_prices`, never hard-coded** (`src/pricing.js`). Prices are micro-USD per
+**LLM cost is computed from `model_prices`, never hard-coded** (`src/pricing.js`), unless the client *supplies* the call's cost (below). Prices are micro-USD per
 million tokens (so $3.00/Mtok = `3000000`). `input_tokens` is the *whole prompt*: it includes `cached_tokens` (served from the
 prompt cache, billed at the cache-read rate) and the tokens *written* to the cache, which are billed at their own rates
 (`cache_write_tokens` = 5-minute TTL, `cache_write_1h_tokens` = 1-hour TTL; Anthropic charges 1.25x and 2x the input price):
@@ -234,6 +271,10 @@ get a real, sourced price list instead (`src/import/prices.js`, see below). Edit
 
 Infrastructure cost is **supplied by the client** (`infra_cost_micro_usd` on each request) and is not derived from
 prices. Request total = infra + sum of its LLM calls.
+
+An LLM call may also **supply its own cost** (`cost_micro_usd`, an integer 0 to $1000): a gateway such as OpenRouter reports the exact charge of each call for any of hundreds of models, and
+`finops proxy` sends the list-price cost it computed for OpenAI and DeepSeek calls. Such a call needs no `model_prices` row, is stored as it came, and is marked `cost_source = 'supplied'` (calls priced by the table are `'price_list'`;
+older databases get the column with a default). The request drill-down says so instead of showing a price that was never used. Everything else (rollups, the brute-force verifier, alerts) treats it as any other cost.
 
 ### Rollups
 
@@ -266,9 +307,9 @@ of it). Chart buckets are 1h / 6h / 24h. Each delta compares with the immediatel
 ## Ingest and simulation
 
 `POST /api/ingest` takes `{ "requests": [ { id, ts, tenant_id, endpoint, method, status, duration_ms,
-infra_cost_micro_usd, llm_calls: [ { model, input_tokens, output_tokens, cached_tokens?, cache_write_tokens?, cache_write_1h_tokens?, latency_ms, ts?, id? } ] } ] }`.
+infra_cost_micro_usd, llm_calls: [ { model, input_tokens, output_tokens, cached_tokens?, cache_write_tokens?, cache_write_1h_tokens?, cost_micro_usd?, latency_ms, ts?, id? } ] } ] }`.
 It validates every field (types, ranges, regexes, known model with a price at that `ts`, `cached + writes <= input`, unknown
-fields rejected), computes cost, and writes raw rows plus rollups in **one transaction**. A batch is capped at 1000
+fields rejected), computes cost (unless the call supplies `cost_micro_usd`: then no price row is needed), and writes raw rows plus rollups in **one transaction**. A batch is capped at 1000
 requests (413) and 1 MB; any invalid item rejects the whole batch (400 with a list), so a retry can never half-apply.
 
 The simulator (`src/sim.js`) is seeded: 8 tenants, 12 endpoints, 3 models, daily seasonality (per-tenant phase),
@@ -354,6 +395,31 @@ A failing cost check never fails the import. Rows for a model with no price are 
 
 **Tested against a fake Admin API that follows the documented contract** (parameters, headers, pagination, cents), not against Anthropic's: no Admin key was available while this was built. Options: `--days N` / `--since YYYY-MM-DD`,
 `--bucket`, `--tenant-by`, `--db`, `--replace`, `--base-url`, `--no-cost-check`, `--price`.
+
+### FastRouter's past requests (`scripts/import-fastrouter.js`)
+
+`finops proxy` only sees calls made after you start it. For FastRouter's past the honest state of its [docs](https://docs.fastrouter.ai/llms.txt) is: **no call lists past requests, so a key alone cannot pull history.** The dashboard's
+Activity Log is a web page (an export is not documented), Observability Destinations (Kafka, beta, by request) forwards only *new* requests, and the one API that reads the past,
+[`POST /api/v1/generation`](https://docs.fastrouter.ai/api-reference/generations.md), returns **one** request by its id. The importer therefore takes history from what you can get:
+
+```
+FASTROUTER_API_KEY=... finops import fastrouter --ids chat-ids.txt     # look each id up with /generation
+finops import fastrouter --file activity-log.csv --check                # an export: how were the columns matched? writes nothing
+finops import fastrouter --file activity-log.csv
+finops start                                                            # source: "FastRouter (past requests)"
+```
+
+- **`--ids FILE`** (`-` for standard input): one request id per line (or comma-separated). The id is the `usage.chat_id` that every FastRouter chat response carries, so it is only there if your own logs kept it. Each is looked up (4 at a time, `--concurrency`),
+  429 and 5xx are retried with backoff, a refused key stops the run at once, an id FastRouter does not know (or has expired: the docs mention 404 for both) is counted. `--append` resumes: ids already imported are not asked for again.
+  The key comes from `FASTROUTER_API_KEY` only and is sent to `--base-url` (https; plain http only for localhost) in the `Authorization` header: never in a URL, a log or an error message.
+- **`--file EXPORT`** (CSV, JSON, a JSON object holding a list, or JSON lines): FastRouter does not document an export format, so columns are **matched by name** (`Time`, `Model`, `Prompt Tokens`, `Cost (USD)`, `usage.cost`, ...) and the run prints which it used. If it cannot tell
+  it refuses and lists the columns; `--map cost="Cost (USD)"` names one by hand, `--cost-scale 0.01` converts cents, `--check` shows the matching plus three converted rows and writes nothing. A *credits* column is never picked automatically (its unit is not documented): say `--map cost=...` if it is dollars.
+- **What is kept**: model, time, token counts, status and duration, **FastRouter's own cost** (`usage.cost`, USD; stored as a supplied cost, so no price table is involved) and a hashed key label (`fr-key-...`: FastRouter returns a hash of the key "for auditing"; in an export the tenant column is hashed here too unless you pass
+  `--tenant-raw` for a column of key *names*; `--key-map` names the labels). **Never kept**: prompts and completions. The `/generation` answer *contains* the request and response payloads; they are parsed in memory and dropped, and a test greps the database files and the output for them.
+- **Limits, stated rather than hidden**: cached-token counts are not in the generation API (0 here); a bring-your-own-key request shows FastRouter's figure, which may not include what the provider charged you directly (the run counts them); only the requests you supply are imported, so **alerts are not computed**;
+  an imported database is a separate source from the proxy's `live` one, so past and live data are two entries in the menu.
+
+**Verified against a fake of `/generation` that follows the documentation (shape, status codes, a payload canary, a credits decoy), and against made-up export files; not against the real FastRouter** (no key, and no export to look at).
 
 ### Public traces (`scripts/import-trace.js`)
 
@@ -597,7 +663,7 @@ What it will and will not do, on purpose:
 
 ## Tests
 
-`npm test` runs 189 `node:test` tests (about 20-30 s, run serially):
+`npm test` runs 227 `node:test` tests (about 20-30 s, run serially):
 
 * **pricing**: cached tokens and cache writes (5-minute / 1-hour), rounding, `effective_from`, a `BigInt` reference on 5,000 random inputs each with and without writes;
 * **ingest**: validation (every field), batch cap, idempotency, atomic rollback, **rollups vs brute-force recomputation** after randomised
@@ -674,7 +740,8 @@ cache-writes column, light/dark, 390 px, no console errors or CSP violations).
 **Not verified**
 
 * `import-anthropic-usage.js` has never talked to Anthropic's real Admin API (see [above](#your-organizations-anthropic-usage-scriptsimport-anthropic-usagejs)); only a fake that follows the documentation.
-* `finops proxy` has never talked to the real api.anthropic.com (see [Live data](#live-data-finops-proxy)); only a fake of it.
+* `import-fastrouter.js` has never talked to FastRouter, and has never seen a real FastRouter export (the format is undocumented; columns are matched by name and the run says what it matched). Only a fake of `/generation` that follows the docs, and made-up files.
+* `finops proxy` has never talked to the real api.anthropic.com, api.openai.com, api.deepseek.com or openrouter.ai (see [Live data](#live-data-finops-proxy)); only fakes of them. The built-in OpenAI and DeepSeek prices come from a page-reading tool, not an invoice.
 * The Claude Code importer assumes the transcript layout of the Claude Code version on this machine (message ids, `cost-state` entries, `agentId`, `attributionAgent`, `cache_creation`
   breakdown). Other versions may differ: unknown shapes are skipped, never guessed. Only macOS paths were tried.
 * Prices: `opus-5`, `haiku-4-5` and `haiku-5-5` are not cross-checked against Claude Code's own cost; GPT prices for BurstGPT are assumptions about mid-2023 list prices; Azure traces are priced as whatever

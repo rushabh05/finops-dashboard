@@ -10,6 +10,7 @@ import { RE_TENANT, RE_ENDPOINT } from './ingest.js';
 import { installPrices, normalizeModel } from './import/prices.js';
 import { usageFields } from './import/claude-code.js';
 import { isLoopbackHost } from './security.js';
+import { OpenAiSseUsage, apiKeyOf, keyLabel, listPriceMicro, openaiUsage, parseProviderSpec } from './providers.js';
 
 /*
  * `finops proxy`: record the cost of every Anthropic Messages API call your app makes, live, with no code change beyond a base URL.
@@ -24,8 +25,11 @@ import { isLoopbackHost } from './security.js';
  *    duration and, per call, the model and the token counts from the response's own `usage` block.
  *  - The dashboard stays the single writer: the proxy POSTs to its ordinary ingest endpoint, so validation, pricing, the live stream and
  *    the detector all behave exactly as for any other source.
- *  - Anthropic Messages API only (`POST /v1/messages`, streaming or not); every other path is forwarded without being recorded. OpenAI-style
- *    APIs are not recorded: this project has no verified price list for them, and a cost number from a guessed price is worse than none.
+ *  - Anthropic Messages API at the root (`POST /v1/messages`, streaming or not). Other providers are opt-in routes under a prefix, each with its own
+ *    fixed upstream: `--provider openai` serves http://127.0.0.1:8788/openai/v1/..., `--provider deepseek` .../deepseek/..., `--provider openrouter`
+ *    .../openrouter/api/v1/... (src/providers.js). Their chat-completion and Responses calls are recorded; every other path is forwarded, not recorded.
+ *  - A cost that no price can be found for is never guessed: the request is recorded without cost, the model is named in the log and counted.
+ *  - Which API key made a call can become the tenant (`keyTenants`): a one-way label of the key, never the key (providers.js, keyLabel).
  */
 
 const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade']);
@@ -187,10 +191,25 @@ class Recorder {
 
 export { normalizeModel }; // the tests (and callers) have always imported it from here
 
+/** A recorded OpenAI-format request: the call's cost is the provider's own figure when it reports one, else tokens x list price; null cost = unpriced. */
+export function buildOpenAiRecord({ id, ts, tenant, endpoint, method, status, durationMs, model, usage, provider, priceOverrides = new Map() }) {
+  const base = { id, ts, tenant_id: tenant, endpoint, method, status, duration_ms: durationMs, infra_cost_micro_usd: 0, llm_calls: [] };
+  const u = model && usage ? openaiUsage(usage, { reportsCost: provider.reportsCost }) : null;
+  if (!u) return { record: base, unpriced: null };
+  const name = String(model).replace(/[^A-Za-z0-9._:/-]/g, '_').slice(0, 64) || 'unknown';
+  const micro = u.reportedMicro ?? listPriceMicro(provider, String(model), u, ts, priceOverrides);
+  if (micro === null) return { record: base, unpriced: name };
+  base.llm_calls.push({ model: name, input_tokens: u.input, output_tokens: u.output, cached_tokens: u.cached, cache_write_tokens: u.cacheWrite, latency_ms: durationMs, cost_micro_usd: micro });
+  return { record: base, unpriced: null };
+}
+
+const KEY_TENANT_MAX = 64;
+
 export function createProxy({
   upstream = 'https://api.anthropic.com', dashboard = 'http://127.0.0.1:8787', source = 'live', tenant = 'default',
   host = '127.0.0.1', port = 8788, authToken = '', log = () => {}, verbose = false, fetchImpl = globalThis.fetch,
   flushMs = 1000, maxPending = 1000,
+  providers = [], reportedCost = [], prices = [], keyTenants = false, keyMap = {},
 } = {}) {
   const up = parseBase(upstream, 'upstream');
   const dash = parseBase(dashboard, 'dashboard');
@@ -198,12 +217,36 @@ export function createProxy({
   if (source === SAMPLE_SOURCE) throw new Error(`source "${SAMPLE_SOURCE}" is the simulated sample database: recording real calls into it would mix them with fake traffic`);
   if (!RE_TENANT.test(tenant)) throw new Error('tenant must match ' + RE_TENANT);
   if (!isLoopbackHost(host)) throw new Error('the proxy only listens on this machine (127.0.0.1): run one next to each service instead of exposing it');
+  for (const [label, name] of Object.entries(keyMap)) {
+    if (!/^key-[0-9a-f]{10}$/.test(label)) throw new Error(`key map: "${label}" is not a key label (see: finops key-label)`);
+    if (typeof name !== 'string' || !RE_TENANT.test(name)) throw new Error(`key map: the tenant for ${label} must match ${RE_TENANT}`);
+  }
 
-  const stats = { proxied: 0, recorded: 0, rejected: 0, dropped: 0, upstream_errors: 0, unreadable_usage: 0, aborted: 0 };
+  // The routes: the root is Anthropic (as ever), every provider is a prefix with its own FIXED upstream. A request can choose a route, never a host.
+  const mk = (name, p) => { const u = parseBase(p.upstream, name ? `provider "${name}" upstream` : 'upstream'); return { name, up: u, format: p.format, provider: p, transport: u.protocol === 'https:' ? https : http }; };
+  const root = mk(null, { name: null, upstream: up.href, format: 'anthropic' });
+  const routes = new Map();
+  for (const spec of providers) {
+    const p = typeof spec === 'string' ? parseProviderSpec(spec, { reportedCost }) : spec;
+    if (routes.has(p.name)) throw new Error(`provider "${p.name}" is given twice`);
+    routes.set(p.name, mk(p.name, p));
+  }
+  for (const n of reportedCost) if (!routes.has(n)) throw new Error(`--reported-cost ${n}: there is no provider called "${n}" (add --provider ${n}=URL)`);
+  const priceOverrides = new Map(prices.map((p) => [p.model, p]));
+
+  const stats = { proxied: 0, recorded: 0, rejected: 0, dropped: 0, upstream_errors: 0, unreadable_usage: 0, aborted: 0, unpriced: 0 };
   const recorder = new Recorder({ dashboard: dash, source, authToken, fetchImpl, log, stats, flushMs, maxPending });
-  const transport = up.protocol === 'https:' ? https : http;
   const inflight = new Set();
+  const seenKeys = new Set(), warnedModels = new Set();
   let warnedLabel = false, warnedUsage = false;
+
+  function routeOf(url) {
+    const first = url.slice(1).split(/[/?]/, 1)[0];
+    const r = routes.get(first);
+    if (!r) return { route: root, rest: url };
+    const rest = url.slice(1 + first.length);
+    return { route: r, rest: rest === '' || rest[0] === '?' ? `/${rest}` : rest };
+  }
 
   function label(req) {
     const t = req.headers['x-finops-tenant'];
@@ -211,7 +254,16 @@ export function createProxy({
     const okT = typeof t === 'string' && RE_TENANT.test(t);
     const okE = typeof e === 'string' && RE_ENDPOINT.test(e);
     if (((t !== undefined && !okT) || (e !== undefined && !okE)) && !warnedLabel) { warnedLabel = true; log('ignored an invalid x-finops-tenant / x-finops-endpoint header (tenant: letters, digits, . _ -; endpoint: a path like /summarize)'); }
-    return { tenant: okT ? t : tenant, endpoint: okE ? e : null };
+    let byKey = null;
+    if (!okT && keyTenants) {
+      const key = apiKeyOf(req.headers);
+      if (key) {
+        const l = keyLabel(key);
+        byKey = keyMap[l] ?? l;
+        if (!seenKeys.has(l) && seenKeys.size < 1000) { seenKeys.add(l); log(`new API key seen: recorded as tenant "${byKey}"${keyMap[l] ? '' : ` (name it in --key-map: "${l}": "team-name")`}`); }
+      }
+    }
+    return { tenant: okT ? t : byKey ?? tenant, endpoint: okE ? e : null };
   }
 
   function bad(res, status, message) {
@@ -220,24 +272,28 @@ export function createProxy({
     res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: `finops proxy: ${message}` } }));
   }
 
+  const RECORDED = { anthropic: (m, p) => m === 'POST' && p === '/v1/messages', openai: (m, p) => m === 'POST' && /\/(chat\/completions|responses)\/?$/.test(p) };
+
   function handle(req, res) {
     if (req.url === '/__finops/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ ok: true, upstream: up.host, dashboard: dash.origin, source, pending: recorder.pending.length, ...stats }));
+      return res.end(JSON.stringify({ ok: true, upstream: up.host, providers: [...routes.keys()], dashboard: dash.origin, source, pending: recorder.pending.length, ...stats }));
     }
     // origin-form only: '//evil.example/x' and absolute-form 'http://evil.example/' must not be able to pick another host
     if (typeof req.url !== 'string' || !/^\/[^\s]*$/.test(req.url) || req.url.startsWith('//')) return bad(res, 400, 'bad request path');
+    const { route, rest } = routeOf(req.url);
     let target;
-    try { target = new URL(up.origin + req.url); } catch { return bad(res, 400, 'bad request path'); }
-    if (target.origin !== up.origin) return bad(res, 400, 'bad request path');
+    try { target = new URL(route.up.origin + rest); } catch { return bad(res, 400, 'bad request path'); }
+    if (target.origin !== route.up.origin) return bad(res, 400, 'bad request path');
 
     const start = Date.now();
-    const recordIt = req.method === 'POST' && target.pathname === '/v1/messages';
+    const recordIt = RECORDED[route.format](req.method, target.pathname);
     const lab = label(req);
     const headers = {};
     for (const [k, v] of Object.entries(req.headers)) if (!HOP_BY_HOP.has(k) && k !== 'host' && !k.startsWith('x-finops-')) headers[k] = v;
-    headers.host = up.host;
+    headers.host = route.up.host;
     headers['accept-encoding'] = 'identity'; // read usage from plain text (a compressed reply is still handled below)
+    const endpoint = lab.endpoint ?? ((route.name ? `/${route.name}${target.pathname}` : target.pathname).replace(/[^A-Za-z0-9._~/:{}-]/g, '_').slice(0, 119) || '/');
 
     stats.proxied++;
     let done = false, partial = () => ({ usage: null, model: null });
@@ -248,19 +304,28 @@ export function createProxy({
       if (status >= 500) stats.upstream_errors++;
       if (!recordIt) return;
       const ok2xx = status >= 200 && status < 300;
-      if (ok2xx && !(usage && Object.keys(usage).length)) { stats.unreadable_usage++; if (!warnedUsage) { warnedUsage = true; log('a successful /v1/messages response had no readable usage block: the request is recorded without cost'); } }
+      if (ok2xx && !(usage && Object.keys(usage).length)) {
+        stats.unreadable_usage++;
+        if (!warnedUsage) { warnedUsage = true; log(route.format === 'openai' ? `a successful ${route.name} response had no readable usage block: the request is recorded without cost. A streamed call needs stream_options: {"include_usage": true}` : 'a successful /v1/messages response had no readable usage block: the request is recorded without cost'); }
+      }
       const duration = Math.max(0, Math.min(3_600_000, Date.now() - start));
-      const rec = buildRecord({
-        id: `px-${start.toString(36)}-${randomBytes(5).toString('hex')}`, ts: start, tenant: lab.tenant, endpoint: lab.endpoint ?? target.pathname,
-        method: req.method, status, durationMs: duration, model: ok2xx || usage ? model : null, usage: ok2xx || usage ? usage : null,
-      });
-      if (verbose) log(`${req.method} ${target.pathname} ${status} ${duration} ms tenant=${lab.tenant}${rec.llm_calls[0] ? ` ${rec.llm_calls[0].model} in=${rec.llm_calls[0].input_tokens} out=${rec.llm_calls[0].output_tokens}` : ''}`);
+      const common = { id: `px-${start.toString(36)}-${randomBytes(5).toString('hex')}`, ts: start, tenant: lab.tenant, endpoint, method: req.method, status, durationMs: duration, model: ok2xx || usage ? model : null, usage: ok2xx || usage ? usage : null };
+      let rec;
+      if (route.format === 'openai') {
+        const r = buildOpenAiRecord({ ...common, provider: route.provider, priceOverrides });
+        rec = r.record;
+        if (r.unpriced) {
+          stats.unpriced++;
+          if (!warnedModels.has(r.unpriced) && warnedModels.size < 200) { warnedModels.add(r.unpriced); log(`no price for model "${r.unpriced}" (${route.name}): the request is recorded WITHOUT cost. Add one: --price ${r.unpriced}=INPUT,OUTPUT,CACHED (USD per million tokens)${route.provider.reportsCost ? '' : ', or if this provider reports each call\'s cost in usage.cost: --reported-cost ' + route.name}`); }
+        }
+      } else rec = buildRecord(common);
+      if (verbose) log(`${req.method} ${route.name ? `/${route.name}` : ''}${target.pathname} ${status} ${duration} ms tenant=${lab.tenant}${rec.llm_calls[0] ? ` ${rec.llm_calls[0].model} in=${rec.llm_calls[0].input_tokens} out=${rec.llm_calls[0].output_tokens}` : ''}`);
       recorder.add(rec);
     };
     const handleCtx = { destroy: () => { upReq.destroy(); res.destroy(); } };
     inflight.add(handleCtx);
 
-    const upReq = transport.request({ protocol: up.protocol, hostname: up.hostname, port: up.port || undefined, path: target.pathname + target.search, method: req.method, headers }, (r) => {
+    const upReq = route.transport.request({ protocol: route.up.protocol, hostname: route.up.hostname, port: route.up.port || undefined, path: target.pathname + target.search, method: req.method, headers }, (r) => {
       const outHeaders = {};
       for (const [k, v] of Object.entries(r.headers)) if (!HOP_BY_HOP.has(k)) outHeaders[k] = v;
       res.writeHead(r.statusCode, outHeaders);
@@ -271,7 +336,7 @@ export function createProxy({
       const decoder = enc === 'gzip' || enc === 'x-gzip' ? zlib.createGunzip() : enc === 'deflate' ? zlib.createInflate() : enc === 'br' ? zlib.createBrotliDecompress() : null;
       const readable = enc === 'identity' || decoder;
       const text = new StringDecoder('utf8');
-      const parser = new SseUsage();
+      const parser = route.format === 'openai' ? new OpenAiSseUsage() : new SseUsage();
       if (sse && recordIt) partial = () => ({ usage: parser.sawUsage ? parser.usage : null, model: parser.model });
       const chunks = []; let size = 0;
       const feed = (chunk) => {
@@ -283,7 +348,7 @@ export function createProxy({
         let usage = null, model = null, status = r.statusCode;
         if (sse) {
           usage = parser.sawUsage ? parser.usage : null; model = parser.model;
-          if (!parser.complete && parser.errorType && status < 400) status = parser.errorType === 'overloaded_error' ? 529 : parser.errorType === 'rate_limit_error' ? 429 : 500;
+          if (!parser.complete && parser.errorType && status < 400) status = parser.errorType === 'overloaded_error' ? 529 : ['rate_limit_error', 'rate_limit_exceeded', '429'].includes(parser.errorType) ? 429 : 500;
         } else if (size && size <= MAX_PARSE_BYTES) {
           try { const j = JSON.parse(Buffer.concat(chunks).toString('utf8')); usage = j.usage ?? null; model = j.model ?? null; } catch { /* not JSON: nothing to read */ }
         }
@@ -319,14 +384,17 @@ export function createProxy({
     server, stats, recorder,
     get port() { return boundPort; },
     get url() { return `http://${host.includes(':') ? `[${host}]` : host}:${boundPort}`; },
+    providers: [...routes.keys()],
     listen: () => new Promise((resolve, reject) => {
       server.once('error', reject);
       server.listen(port, host, () => {
         boundPort = server.address().port;
-        // ANTHROPIC_BASE_URL points at this proxy in the app's shell: an upstream that is the proxy itself would forward every call to itself forever
-        if (isLoopbackHost(up.hostname.replace(/^\[|\]$/g, '')) && Number(up.port || (up.protocol === 'https:' ? 443 : 80)) === boundPort) {
-          server.close(() => reject(new Error('the upstream is this proxy itself (a loop): is ANTHROPIC_BASE_URL exported in this shell? pass --upstream https://api.anthropic.com')));
-          return;
+        // ANTHROPIC_BASE_URL (or OPENAI_BASE_URL ...) points at this proxy in the app's shell: an upstream that is the proxy itself would forward every call to itself forever
+        for (const r of [root, ...routes.values()]) {
+          if (isLoopbackHost(r.up.hostname.replace(/^\[|\]$/g, '')) && Number(r.up.port || (r.up.protocol === 'https:' ? 443 : 80)) === boundPort) {
+            server.close(() => reject(new Error(`the ${r.name ? `"${r.name}" ` : ''}upstream is this proxy itself (a loop): is ${r.name ? `a ${r.name} base URL` : 'ANTHROPIC_BASE_URL'} exported in this shell? pass the real upstream URL`)));
+            return;
+          }
         }
         resolve();
       });

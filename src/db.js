@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS llm_calls(
   latency_ms INTEGER NOT NULL,
   cost_micro_usd INTEGER NOT NULL,
   cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-  cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0
+  cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
+  cost_source TEXT NOT NULL DEFAULT 'price_list'
 );
 CREATE INDEX IF NOT EXISTS llm_calls_request ON llm_calls(request_id);
 CREATE INDEX IF NOT EXISTS llm_calls_ts ON llm_calls(ts);
@@ -115,6 +116,7 @@ END;
 const ADDED_COLUMNS = [
   ['llm_calls', 'cache_write_tokens', 'INTEGER NOT NULL DEFAULT 0'],
   ['llm_calls', 'cache_write_1h_tokens', 'INTEGER NOT NULL DEFAULT 0'],
+  ['llm_calls', 'cost_source', "TEXT NOT NULL DEFAULT 'price_list'"], // 'price_list': computed from model_prices; 'supplied': the sender's own figure
   ['model_prices', 'cache_write_per_mtok', 'INTEGER NOT NULL DEFAULT 0'],
   ['model_prices', 'cache_write_1h_per_mtok', 'INTEGER NOT NULL DEFAULT 0'],
 ];

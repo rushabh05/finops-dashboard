@@ -13,21 +13,24 @@ export class ValidationError extends Error {
 const RE_ID = /^[A-Za-z0-9._:#-]{1,100}$/;
 export const RE_TENANT = /^[A-Za-z0-9._-]{1,64}$/;
 export const RE_ENDPOINT = /^\/[A-Za-z0-9._~/:{}-]{0,119}$/;
-export const RE_MODEL = /^[A-Za-z0-9._:-]{1,64}$/;
+export const RE_MODEL = /^[A-Za-z0-9._:/-]{1,64}$/; // '/' for gateway ids like openai/gpt-4o
 const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']);
 
 const TS_MIN = Date.UTC(2020, 0, 1);
 const TS_MAX = Date.UTC(2100, 0, 1);
 const MAX_TOKENS = 10_000_000;
+const MAX_SUPPLIED_COST = 1_000_000_000; // micro-USD for ONE call ($1000), the same bound as infra_cost_micro_usd
 const MAX_ERRORS = 20;
 
 const REQ_KEYS = new Set(['id', 'ts', 'tenant_id', 'endpoint', 'method', 'status', 'duration_ms', 'infra_cost_micro_usd', 'llm_calls']);
-const CALL_KEYS = new Set(['id', 'ts', 'model', 'input_tokens', 'output_tokens', 'cached_tokens', 'cache_write_tokens', 'cache_write_1h_tokens', 'latency_ms']);
+const CALL_KEYS = new Set(['id', 'ts', 'model', 'input_tokens', 'output_tokens', 'cached_tokens', 'cache_write_tokens', 'cache_write_1h_tokens', 'latency_ms', 'cost_micro_usd']);
 
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 
 /**
- * Validate and normalise a batch body ({ requests: [...] }) and compute LLM cost from model_prices.
+ * Validate and normalise a batch body ({ requests: [...] }) and compute LLM cost from model_prices, unless the call SUPPLIES its own
+ * `cost_micro_usd` (a gateway such as OpenRouter reports the exact charge of each call, for any of hundreds of models): then that integer
+ * is stored as it came, no model_prices row is needed, and the call is marked cost_source = 'supplied'.
  * All-or-nothing: any problem rejects the whole batch (so a retry can never half-apply).
  * Returns normalised requests, each with `llm_calls[]` carrying cost_micro_usd.
  */
@@ -85,9 +88,18 @@ export function validateBatch(body, { priceBook, maxBatch = 1000, maxCallsPerReq
         err(`${cat}: cached_tokens + cache_write_tokens + cache_write_1h_tokens cannot exceed input_tokens (input_tokens is the whole prompt)`);
       }
       if (!isInt(c.latency_ms, 0, 3_600_000)) err(`${cat}.latency_ms: must be an integer 0..3600000`);
+      const supplied = c.cost_micro_usd !== undefined;
+      if (supplied && !isInt(c.cost_micro_usd, 0, MAX_SUPPLIED_COST)) err(`${cat}.cost_micro_usd: must be a non-negative integer (micro-USD) up to ${MAX_SUPPLIED_COST}`);
       const id = c.id === undefined ? `${r.id}#${j}` : c.id;
       if (typeof id !== 'string' || !RE_ID.test(id)) err(`${cat}.id: must match ${RE_ID}`);
       if (errors.length > mark) return; // this call is already invalid; report the rest of the batch too
+      if (supplied) {
+        normCalls.push({
+          id, ts, model: c.model, input_tokens: c.input_tokens, output_tokens: c.output_tokens, cached_tokens: cached, cache_write_tokens: cw, cache_write_1h_tokens: cw1h,
+          latency_ms: c.latency_ms, cost_micro_usd: c.cost_micro_usd, cost_source: 'supplied',
+        });
+        return;
+      }
       const price = priceBook.priceAt(c.model, ts);
       if (!price) return err(`${cat}.model: no price in model_prices for "${c.model}" at ts=${ts}`);
       // a missing write rate must not silently bill the tokens at 0: refuse instead
@@ -97,7 +109,7 @@ export function validateBatch(body, { priceBook, maxBatch = 1000, maxCallsPerReq
       normCalls.push({
         id, ts, model: c.model, input_tokens: c.input_tokens, output_tokens: c.output_tokens,
         cached_tokens: cached, cache_write_tokens: cw, cache_write_1h_tokens: cw1h, latency_ms: c.latency_ms,
-        cost_micro_usd: priceBook.cost(call, ts),
+        cost_micro_usd: priceBook.cost(call, ts), cost_source: 'price_list',
       });
     });
     out.push({
@@ -130,7 +142,7 @@ export class Ingestor {
       'INSERT OR IGNORE INTO requests(id, ts, tenant_id, endpoint, method, status, duration_ms, infra_cost_micro_usd) VALUES(?,?,?,?,?,?,?,?)',
     );
     this.stCall = db.prepare(
-      'INSERT INTO llm_calls(id, request_id, ts, tenant_id, endpoint, model, input_tokens, output_tokens, cached_tokens, latency_ms, cost_micro_usd, cache_write_tokens, cache_write_1h_tokens) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      'INSERT INTO llm_calls(id, request_id, ts, tenant_id, endpoint, model, input_tokens, output_tokens, cached_tokens, latency_ms, cost_micro_usd, cache_write_tokens, cache_write_1h_tokens, cost_source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
     );
     this.stRollup = db.prepare(
       `INSERT INTO rollups_hourly(hour, tenant_id, endpoint, model, requests, llm_calls, tokens_in, tokens_out, cost_micro_usd)
@@ -171,7 +183,7 @@ export class Ingestor {
         infra.cost_micro_usd += r.infra_cost_micro_usd;
         cost += r.infra_cost_micro_usd;
         for (const c of r.llm_calls) {
-          this.stCall.run(c.id, r.id, c.ts, r.tenant_id, r.endpoint, c.model, c.input_tokens, c.output_tokens, c.cached_tokens, c.latency_ms, c.cost_micro_usd, c.cache_write_tokens, c.cache_write_1h_tokens);
+          this.stCall.run(c.id, r.id, c.ts, r.tenant_id, r.endpoint, c.model, c.input_tokens, c.output_tokens, c.cached_tokens, c.latency_ms, c.cost_micro_usd, c.cache_write_tokens, c.cache_write_1h_tokens, c.cost_source ?? 'price_list');
           const row = addRollup(acc, hourOf(c.ts), r.tenant_id, r.endpoint, c.model);
           row.llm_calls += 1;
           row.tokens_in += c.input_tokens;
